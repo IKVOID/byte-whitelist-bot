@@ -1,0 +1,31 @@
+name: Deploy to Discloud
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'bot.py'
+      - 'requirements.txt'
+      - 'discloud.config'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Environment File
+        run: |
+          cat << 'EOF' > .env
+          DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}
+          API_KEY=${{ secrets.API_KEY }}
+          API_BASE_URL=https://mani272uidbypass.vercel.app/api/v1/uids
+          EOF
+
+      - name: Deploy to Discloud
+        uses: discloud/deploy-action@v1
+        with:
+          token: ${{ secrets.DISCLOUD_TOKEN }}
