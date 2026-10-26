@@ -29,3 +29,4 @@ jobs:
         uses: discloud/deploy-action@v1
         with:
           token: ${{ secrets.DISCLOUD_TOKEN }}
+          app_id: "1560522140954923169"
