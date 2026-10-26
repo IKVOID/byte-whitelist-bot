@@ -25,8 +25,32 @@ jobs:
           API_BASE_URL=https://mani272uidbypass.vercel.app/api/v1/uids
           EOF
 
-      - name: Deploy to Discloud
-        uses: discloud/deploy-action@v1
-        with:
-          token: ${{ secrets.DISCLOUD_TOKEN }}
-          app_id: "1560522140954923169"
+      - name: Package Bot Zip
+        run: |
+          zip -r discloud_upload.zip discloud.config bot.py requirements.txt .env config.json
+
+      - name: Deploy via Discloud Official SDK
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+        run: |
+          npm install discloud.app
+          node -e '
+            const { discloud } = require("discloud.app");
+            (async () => {
+              try {
+                await discloud.login(process.env.DISCLOUD_TOKEN);
+                console.log("Logged in to Discloud!");
+                const user = await discloud.user.fetch();
+                console.log("User:", user.username, "Total RAM:", user.totalRamMb);
+
+                console.log("Uploading discloud_upload.zip to Discloud...");
+                const result = await discloud.apps.create({
+                  file: "./discloud_upload.zip"
+                });
+                console.log("SUCCESS:", JSON.stringify(result, null, 2));
+              } catch (err) {
+                console.error("Discloud Deploy Error:", err);
+                process.exit(1);
+              }
+            })();
+          '
