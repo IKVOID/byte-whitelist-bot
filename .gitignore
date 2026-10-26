@@ -1,0 +1,47 @@
+# Environment variables and secrets (CRITICAL: NEVER COMMIT SECRETS)
+.env
+.env.local
+*.env
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Logs & temp files
+*.log
+bot.log
+*.tmp
+
+# Discloud / local zip packages
+*.zip
+BYTE-WHITELIST-BOT-24-7/
+discloud.config
+
+# Operating System specific
+.DS_Store
+Thumbs.db
+desktop.ini
