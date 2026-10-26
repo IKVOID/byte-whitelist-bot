@@ -1,0 +1,35 @@
+name: 24/7 Render Keep-Alive Ping
+
+on:
+  schedule:
+    # Run every 10 minutes (cron format: minute hour day month day-of-week)
+    - cron: "*/10 * * * *"
+  workflow_dispatch: # Allows manual trigger anytime from GitHub Actions tab
+
+jobs:
+  ping-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Web Service Health Endpoint
+        env:
+          SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL }}
+        run: |
+          if [ -z "$SERVICE_URL" ]; then
+            echo "::warning ::RENDER_SERVICE_URL secret is not set in GitHub repository settings!"
+            echo "Please go to Settings -> Secrets and variables -> Actions -> New repository secret -> Name: RENDER_SERVICE_URL"
+            exit 0
+          fi
+          
+          # Clean trailing slash if present
+          CLEAN_URL="${SERVICE_URL%/}"
+          
+          echo "Pinging health endpoint: $CLEAN_URL/api/health"
+          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$CLEAN_URL/api/health" || echo "failed")
+          
+          echo "HTTP Response code: $RESPONSE_CODE"
+          if [ "$RESPONSE_CODE" -eq 200 ] || [ "$RESPONSE_CODE" -eq 301 ] || [ "$RESPONSE_CODE" -eq 302 ]; then
+            echo "✅ Render service is awake and responding!"
+          else
+            echo "Fallback ping to root endpoint..."
+            curl -s "$CLEAN_URL/" || true
+          fi
