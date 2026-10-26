@@ -12,15 +12,17 @@ jobs:
     steps:
       - name: Ping Render Web Service Health Endpoint
         env:
-          SERVICE_URL: ${{ secrets.RENDER_SERVICE_URL || 'https://byte-whitelist-bot.onrender.com' }}
+          SERVICE_URL: ${{ vars.RENDER_SERVICE_URL || secrets.RENDER_SERVICE_URL || 'https://byte-whitelist-bot.onrender.com' }}
         run: |
+          # Clean trailing slash if present
           CLEAN_URL="${SERVICE_URL%/}"
+          
           echo "Pinging health endpoint: $CLEAN_URL/api/health"
           RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$CLEAN_URL/api/health" || echo "failed")
           
           echo "HTTP Response code: $RESPONSE_CODE"
           if [ "$RESPONSE_CODE" -eq 200 ] || [ "$RESPONSE_CODE" -eq 301 ] || [ "$RESPONSE_CODE" -eq 302 ]; then
-            echo "✅ Render service is awake and responding!"
+            echo "Render service is awake and responding!"
           else
             echo "Fallback ping to root endpoint..."
             curl -s "$CLEAN_URL/" || true
