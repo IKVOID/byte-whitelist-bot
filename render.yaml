@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: byte-whitelist-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python render_entry.py
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: API_BASE_URL
+        value: https://mani272uidbypass.vercel.app/api/v1/uids
+      - key: ADMIN_ROLE_ID
+        sync: false
+      - key: LOG_CHANNEL_ID
+        sync: false
