@@ -1,4 +1,4 @@
-﻿import time
+import time
 import collections
 import os
 import io
@@ -9287,30 +9287,25 @@ def get_home_page_data():
         "select_desc": "Return to the main overview",
         "title": f"Hey , I'm {bot_name}",
         "desc": (
-            "A powerful multipurpose bot with Fastest Antinuke\n\n"
-            "\u2022 **My Prefix is** `*`\n"
-            f"\u2022 **Total Commands:** `{total_cmds}`\n"
+            "A powerful multipurpose bot for UID Whitelist, KeyAuth, Tickets & Server Management.\n\n"
+            "\u2022 **My Prefix is** *\n"
+            f"\u2022 **Total Commands:** {total_cmds}\n"
             "\u2022 **Choose a Specific Module of your Desire**\n"
-            ">>> \U0001F6E1 \u00BB Antinuke\n"
-            "\U0001F451 \u00BB Permit\n"
+            ">>> \U0001F4CB \u00BB Whitelist\n"
+            "\U0001F511 \u00BB KeyAuth\n"
+            "\U0001F3AB \u00BB Ticket\n"
+            "\U0001F4DD \u00BB Feedback\n"
+            "\U0001F6E1 \u00BB Verification\n"
+            "\U0001F44B \u00BB Welcomer\n"
             "\U0001F3B5 \u00BB Music\n"
             "\U0001F50A \u00BB VoiceMaster\n"
-            "\U0001F916 \u00BB AIChat\n"
-            "\U0001F504 \u00BB Autoresponder\n"
-            "\u26A1 \u00BB AutoReaction\n"
-            "\U0001F3AB \u00BB Ticket\n"
-            "\U0001F44B \u00BB Welcomer\n"
-            "\U0001F511 \u00BB KeyAuth\n"
-            "\U0001F4CB \u00BB Whitelist\n"
-            "\U0001F4DD \u00BB Feedback\n"
-            "\U0001F528 \u00BB Moderation\n"
             "\u2699 \u00BB Utility\n"
-            "\U0001F4DC \u00BB Logging\n"
-            "\U0001F680 \u00BB Automations\n\n"
+            "\U0001F504 \u00BB System\n\n"
             "\U0001F517 **Links**\n"
             f"[Invite Me]({invite_url}) | [Support Server](https://discord.gg/w5Qvp66KC) | [Website](https://auth.mani272api.xyz)"
         )
     }
+
 
 ZYNRAX_PAGES = [
     {
@@ -9322,312 +9317,182 @@ ZYNRAX_PAGES = [
         "desc": ""
     },
     {
-        "id": "antinuke",
-        "label": "Antinuke",
-        "emoji": "\U0001F6E1",
-        "select_desc": "23-Module Shield, Anti-Raid & Security",
-        "title": "\U0001F6E1 \u00BB Fastest Antinuke & Enterprise Protection",
+        "id": "whitelist",
+        "label": "Whitelist",
+        "emoji": "\U0001F4CB",
+        "select_desc": "UID Whitelist Management & Panels",
+        "title": "\U0001F4CB \u00BB UID Whitelist & License System",
         "desc": (
-            "__Core Shield Commands__\n"
-            "`*antinuke` (or `/antinuke`) \u00BB Open Real-Time Security Dashboard\n"
-            "`*antinukelog <#channel>` \u00BB Set dedicated security audit channel\n"
-            "`*setpunishment <ban|kick|striproles|timeout>` \u00BB Set breach punishment\n"
-            "`*settimeout <minutes>` \u00BB Set duration for timeout punishments\n"
-            "`*antiraid` \u00BB Toggle Anti-Raid Join & Spam Shield\n"
-            "`*lock [all]` / `*unlock [all]` \u00BB Emergency raid lockdown & unlock\n\n"
-            "__All 23 Shielded Modules (Real-Time Gateway Detection)__\n"
-            "\u2022 Anti Ban / Anti Unban / Anti Kick / Anti Member Prune\n"
-            "\u2022 Anti Bot Add (Instant rogue bot ban & reverser)\n"
-            "\u2022 Anti Channel Create / Delete / Update\n"
-            "\u2022 Anti Role Create / Delete / Update / Position\n"
-            "\u2022 Anti Member Dangerous Role Grant\n"
-            "\u2022 Anti Webhook Create / Delete / Update\n"
-            "\u2022 Anti Everyone/Here Ping Suppression\n"
-            "\u2022 Anti Role Ping Suppression\n"
-            "\u2022 Anti Integration & Anti Guild Update"
-        )
-    },
-    {
-        "id": "permit",
-        "label": "Permit",
-        "emoji": "\U0001F451",
-        "select_desc": "Extra Owner & Security Whitelist",
-        "title": "\U0001F451 \u00BB Extra Owner & Whitelist Permit System",
-        "desc": (
-            "__Extra Owner Commands (Full Control & Immunity)__\n"
-            "`*owner add @user` \u00BB Grant Extra Owner (100% Control & Immunity)\n"
-            "`*owner remove @user` \u00BB Remove Extra Owner status (Owner only)\n"
-            "`*owner list` \u00BB View all current Extra Owners\n\n"
-            "__Whitelist Commands (Exempt from 23 Antinuke Triggers)__\n"
-            "`*wl add @user` \u00BB Whitelist user from all 23 security triggers\n"
-            "`*wl remove @user` \u00BB Remove user from security whitelist\n"
-            "`*wl list` (or `*whitelisted`) \u00BB View all whitelisted staff\n"
-            "`*wl config [@user]` \u00BB Display full 23-module security checklist"
-        )
-    },
-    {
-        "id": "music",
-        "label": "Music",
-        "emoji": "\U0001F3B5",
-        "select_desc": "High Fidelity Music Suite (Lavalink v4)",
-        "title": "\U0001F3B5 \u00BB High Fidelity Music Suite (Lavalink v4)",
-        "desc": (
-            "__Playback Commands__\n"
-            "`*play <query/URL>` (or `*p`) - Play YouTube, Spotify or SoundCloud\n"
-            "`*nowplaying` (or `*np`) - Show interactive dark controller\n"
-            "`*pause` / `*resume` - Pause or resume track playback\n"
-            "`*skip` (or `*s`) / `*stop` - Skip track or stop and clear queue\n"
-            "`*queue` (or `*q`) / `*clearqueue` - View upcoming tracks or wipe queue\n"
-            "`*volume <1-100>` / `*loop` - Adjust volume level or toggle loop\n"
-            "`*shuffle` / `*autoplay` - Shuffle queue or enable recommendations\n"
-            "`*join` / `*disconnect` - Summon bot to VC or disconnect\n"
-            "`*247` - Toggle 24/7 permanent VC persistence mode\n\n"
-            "__Audio Engine__\n"
-            "\u2022 `Lavalink v4 Pool` - High-speed cluster with Discord DAVE\n"
-            "\u2022 `Zero Lag` - Crystal-clear 320kbps audio stream"
-        )
-    },
-    {
-        "id": "voicemaster",
-        "label": "VoiceMaster",
-        "emoji": "\U0001F50A",
-        "select_desc": "Interactive 9-Button Controller & Temp VC",
-        "title": "\U0001F50A \u00BB VoiceMaster (Interactive 9-Button Controller)",
-        "desc": (
-            "__VoiceMaster Controller Panel__\n"
-            "`*vmpanel` (or `*vm panel`) \u00BB Spawn Interactive 9-Button Control Panel\n"
-            "`*vm setup` \u00BB One-click auto setup Category, `interface` channel & Join Hub\n"
-            "`*vm info` \u00BB View VoiceMaster current guild configuration\n\n"
-            "__Interactive Room Controls (Panel Buttons or Commands)__\n"
-            "ðŸ”’ `Lock` / ðŸ”“ `Unlock` - Lock or open your voice room\n"
-            "ðŸ‘ï¸ `Hide` / ðŸ‘ï¸â€ðŸ—¨ï¸ `Unhide` - Hide or reveal your VC to the server\n"
-            "ðŸ‘¥ `Limit` - Set user capacity via Modal (0-99)\n"
-            "âœï¸ `Rename` - Rename your voice room via Modal\n"
-            "ðŸš« `Kick` - Kick unwanted members from your room via Modal\n"
-            "ðŸ‘‘ `Claim` - Claim room ownership if original owner leaves\n"
-            "â„¹ï¸ `Info` - View real-time room owner, bitrate & member stats"
-        )
-    },
-    {
-        "id": "aichat",
-        "label": "AIChat",
-        "emoji": "\U0001F916",
-        "select_desc": "Smart AI Chatbot & Contextual Conversations",
-        "title": "\U0001F916 \u00BB Smart AI Chatbot Integration",
-        "desc": (
-            "__AI Commands__\n"
-            "`*setaichannel <#channel>` \u00BB Bind active AI chatbot conversation room\n"
-            "`*resetaichannel` \u00BB Unbind AI conversation channel\n"
-            "`*ask <prompt>` \u00BB Ask quick one-off question to AI assistant\n\n"
-            "__Capabilities__\n"
-            "\u2022 Natural conversational responses & smart server moderation tips\n"
-            "\u2022 Real-time channel context awareness and auto-reply"
-        )
-    },
-    {
-        "id": "autoresponder",
-        "label": "Autoresponder",
-        "emoji": "\U0001F504",
-        "select_desc": "Keyword Triggers & Dynamic Responses",
-        "title": "\U0001F504 \u00BB Custom Autoresponder System",
-        "desc": (
-            "__Trigger Commands__\n"
-            "`*ar add <trigger> | <response>` \u00BB Register custom auto-reply trigger\n"
-            "`*ar remove <trigger>` \u00BB Delete an existing auto-reply\n"
-            "`*ar list` \u00BB View all server autoresponder triggers & replies\n\n"
-            "__Dynamic Placeholders__\n"
-            "\u2022 `{user}` - Mentions the triggering user\n"
-            "\u2022 `{server}` - Inserts current server name\n"
-            "\u2022 `{membercount}` - Current guild member count"
-        )
-    },
-    {
-        "id": "autoreaction",
-        "label": "AutoReaction",
-        "emoji": "\u26A1",
-        "select_desc": "Channel Auto-Reactions & Media Emojis",
-        "title": "\u26A1 \u00BB Channel Auto-Reaction Engine",
-        "desc": (
-            "__Auto-Reaction Commands__\n"
-            "`*autoreact add <#channel> <emoji>` \u00BB Auto-react to messages in channel\n"
-            "`*autoreact remove <#channel> <emoji>` \u00BB Remove auto-reaction from channel\n"
-            "`*autoreact list` \u00BB View all configured channel auto-reactions\n\n"
-            "\u2022 Supports custom and animated emojis\n"
-            "\u2022 Ideal for suggestions, showcase, feedback, and media channels"
-        )
-    },
-    {
-        "id": "ticket",
-        "label": "Ticket",
-        "emoji": "\U0001F3AB",
-        "select_desc": "Support Ticket Panels & Transcripts",
-        "title": "\U0001F3AB \u00BB Support Ticket System",
-        "desc": (
-            "__Panel & Customization__\n"
-            "`*ticketpanel` (or `/ticketpanel`) - Spawn the official Ticket Panel\n"
-            "`*ticketeditor` (or `*tconfig`) - Open In-Discord Panel Customizer\n"
-            "`*setticketbanner <URL>` - Update panel banner image live\n"
-            "`*settickettitle <title>` - Update panel embed title\n"
-            "`*setticketdesc <desc>` - Update panel embed description\n"
-            "`*setticketcategory <id>` - Set category for new tickets\n"
-            "`*setticketlogs <#channel>` - Set channel for saved transcripts\n"
-            "`*addticketoption <name> <emoji> <desc>` - Add panel option\n"
-            "`*ticketinfo` - View full live ticket settings\n\n"
-            "__Ticket Controls__\n"
-            "`*close` / `*claim` - Close ticket with transcript or claim\n"
-            "`*add @user` / `*remove @user` - Manage ticket access"
-        )
-    },
-    {
-        "id": "welcomer",
-        "label": "Welcomer",
-        "emoji": "\U0001F44B",
-        "select_desc": "Server Channel & Custom Welcome DM",
-        "title": "\U0001F44B \u00BB Automated Welcomer System",
-        "desc": (
-            "__Server Welcome Channel__\n"
-            "`*serverwelcome` (or `/serverwelcome`) \u00BB Open Welcomer Editor\n"
-            "`*setwelcomechannel <#channel>` \u00BB Set welcome channel\n"
-            "`*serverwelcometest` \u00BB Send live test welcome embed to channel\n"
-            "`*serverwelcometoggle` \u00BB Toggle server welcome on / off\n\n"
-            "__Personal Direct Message (DM) Welcome__\n"
-            "`*welcomedm` (or `/welcomedm`) \u00BB Open Welcome DM Editor\n"
-            "`*welcometest` \u00BB Send instant test DM welcome to yourself\n"
-            "`*welcometoggle` \u00BB Toggle DM welcome on / off\n"
-            "`*setwelcometitle <text>` / `*setwelcomedesc <text>` \u00BB Customize text\n"
-            "`*setwelcomebanner <URL>` / `*setwelcomethumb <URL>` \u00BB Set banners"
+            "__Commands__\n"
+            "*panel (or /panel) \u00BB Open In-Discord UID Whitelist Panel\n"
+            "*adduid <uid> \u00BB Whitelist player UID\n"
+            "*removeuid <uid> \u00BB Revoke UID from whitelist\n"
+            "*setrole <@role> \u00BB Set whitelist customer role\n"
+            "*setuidlog <#channel> \u00BB Set dedicated channel for UID audit logs\n"
+            "*menu (or /menu) \u00BB Post Byte Corporation Command & Dropdown Menu\n\n"
+            "__Features__\n"
+            "\u2022 Instant server role granting upon UID verification\n"
+            "\u2022 Full audit logging for every UID addition and removal"
         )
     },
     {
         "id": "keyauth",
         "label": "KeyAuth",
         "emoji": "\U0001F511",
-        "select_desc": "License Keys, HWID Reset & 15 Apps",
-        "title": "\U0001F511 \u00BB KeyAuth Enterprise Management",
+        "select_desc": "License Generation & Reseller Management",
+        "title": "\U0001F511 \u00BB KeyAuth & Reseller Management",
         "desc": (
-            "__License Operations__\n"
-            "`*key [create] <app> <days> [level] [count]` - Generate licenses\n"
-            "`*delkey <app> <license_key>` - Permanently delete a license\n"
-            "`*checkkey <app> <license_key>` - Real-time key status check\n"
-            "`*extend <app> <license_key> <days>` - Add active days\n"
-            "`*pause <app> <license_key>` / `*unpause` - Freeze/unfreeze key\n"
-            "`*ban <app> <user|key> <reason>` - Ban user/license\n"
-            "`*unban <app> <user|key>` - Remove KeyAuth ban\n"
-            "`*reset <app> <username>` - Reset user hardware ID (HWID)\n"
-            "`*userinfo <app> <username>` - Fetch full user record\n"
-            "`*deluser <app> <username>` - Delete registered account\n"
-            "`*appinfo <app>` - Application metrics and user counts\n"
-            "`*apps` - List all 15 integrated applications"
+            "__Commands__\n"
+            "*keypanel (or /keypanel) \u00BB Post KeyAuth / Reseller Bot Control Panel\n"
+            "*resellerpanel (or /resellerpanel) \u00BB Post Dedicated Single-App Reseller Panel\n"
+            "*apps (or /apps) \u00BB List all 15 integrated KeyAuth applications\n"
+            "*setkeyrole <@role> \u00BB Set role authorized to generate license keys\n"
+            "*setkeychannel <#channel> \u00BB Lock KeyAuth panel to a specific channel\n"
+            "*setkeylog <#channel> \u00BB Set KeyAuth license generation audit channel\n"
+            "*setresellerrole <@role> \u00BB Set authorized reseller role\n"
+            "*setresellerchannel <#channel> \u00BB Lock reseller panel to channel\n"
+            "*setresellerapp <app> \u00BB Set default application for reseller panel"
         )
     },
     {
-        "id": "whitelist",
-        "label": "Whitelist",
-        "emoji": "\U0001F4CB",
-        "select_desc": "Player UID Whitelist & Extensions",
-        "title": "\U0001F4CB \u00BB UID Whitelist Security Management",
+        "id": "ticket",
+        "label": "Ticket",
+        "emoji": "\U0001F3AB",
+        "select_desc": "Support Tickets, Modals, Claim & AutoPay",
+        "title": "\U0001F3AB \u00BB Interactive Ticket & AutoPay System",
         "desc": (
             "__Commands__\n"
-            "`*add <role> <uid> <days>` - Whitelist player UID with duration\n"
-            "`*remove <uid>` - Instantly revoke player UID whitelist\n"
-            "`*search <uid>` - Check whitelist expiry and details\n"
-            "`*extend <uid> <days>` - Add extra days to existing whitelist\n"
-            "`*panel` - Display the permanent In-Discord Whitelist Center\n"
-            "`*audit [count]` - Export recent whitelist actions\n"
-            "`*stats` - Whitelist database analytics & role breakdown\n\n"
-            "__Enterprise Architecture__\n"
-            "\u2022 Multi-role isolation & automatic role revocation on expiry\n"
-            "\u2022 Real-time webhook audit broadcasts to dedicated channel"
+            "*ticketpanel (or /ticketpanel) \u00BB Post official BYTE CORPORATION Ticket Panel\n"
+            "*ticketeditor \u00BB Open live interactive Ticket Customizer Dashboard\n"
+            "*setticketbuttons \u00BB Edit ticket action buttons (Claim, Close, etc.)\n"
+            "*ticketoptions \u00BB List all configured ticket categories\n"
+            "*ticketbuttons \u00BB List active ticket action buttons\n"
+            "*setautopay \u00BB Configure automatic QR code & UPI payment settings\n"
+            "*setoptbanner \u00BB Set custom banner image for ticket options\n"
+            "*refreshticket \u00BB Instantly sync and reload ticket panel\n\n"
+            "__Features__\n"
+            "\u2022 Staff Claim button with modal customization\n"
+            "\u2022 Multi-category dropdowns with custom banners"
         )
     },
     {
         "id": "feedback",
         "label": "Feedback",
         "emoji": "\U0001F4DD",
-        "select_desc": "48h Reminders & Auto-Scheduler",
-        "title": "\U0001F4DD \u00BB Feedback Reminder System",
+        "select_desc": "Automated Feedback DMs & Reminders",
+        "title": "\U0001F4DD \u00BB Feedback Reminder & Warning System",
         "desc": (
             "__Commands__\n"
-            "`*send` (or `*remind`) - Broadcast feedback reminder DM to role\n"
-            "`*test` (or `*testdm`) - Send instant personal test DM\n"
-            "`*channel` - Post official warning embed in feedback channel\n"
-            "`*schedule` - View 48-Hour auto-scheduler status & delivery\n\n"
+            "*send (or *remind) \u00BB Send feedback warning DM to customer role\n"
+            "*remind_role (or /remind_role) \u00BB Broadcast feedback reminder to all customers\n"
+            "*test (or *testdm) \u00BB Send instant personal test feedback DM\n"
+            "*channel (or /send_channel_warning) \u00BB Post warning embed in feedback channel\n"
+            "*schedule \u00BB Check or configure 48-Hour auto-scheduler status\n\n"
             "__Automated Safeguards__\n"
-            "\u2022 `Strict 48-Hour Cooldown` - Prevents spamming users within 48h\n"
-            "\u2022 `Auto Background Worker` - Automated recurring broadcast checks\n"
-            "\u2022 `Direct Action Link` - One-click upload button to feedback channel"
+            "\u2022 Strict 48-Hour Cooldown prevents user spam\n"
+            "\u2022 Direct feedback channel button inside DM"
         )
     },
     {
-        "id": "moderation",
-        "label": "Moderation",
-        "emoji": "\U0001F528",
-        "select_desc": "Kick, Ban, Timeout, Purge & Clean",
-        "title": "\U0001F528 \u00BB Server Moderation Suite",
+        "id": "verification",
+        "label": "Verification",
+        "emoji": "\U0001F6E1",
+        "select_desc": "Server Member Verification System",
+        "title": "\U0001F6E1 \u00BB Server Verification System",
         "desc": (
-            "__Enforcement Commands__\n"
-            "`*ban @user [reason]` \u00BB Ban member from the server\n"
-            "`*unban <user_id>` \u00BB Remove ban from member\n"
-            "`*kick @user [reason]` \u00BB Kick member from the server\n"
-            "`*timeout @user <minutes> [reason]` \u00BB Mute/Timeout member\n"
-            "`*untimeout @user` \u00BB Remove timeout from member\n"
-            "`*purge <count>` \u00BB Fast bulk delete channel messages (up to 100)\n"
-            "`*nuke` \u00BB Clone and wipe current channel clean"
+            "__Commands__\n"
+            "*autoverifysetup \u00BB 1-Click interactive Verification Setup\n"
+            "*verifyinfo \u00BB View current verification role & settings\n"
+            "*verifyallcurrent (or /verifyallcurrent) \u00BB Grant verified role to all current members\n"
+            "*verifyuser <@user> \u00BB Manually verify a member"
+        )
+    },
+    {
+        "id": "welcomer",
+        "label": "Welcomer",
+        "emoji": "\U0001F44B",
+        "select_desc": "Custom Welcome DM & Server Announcements",
+        "title": "\U0001F44B \u00BB Customizable Welcome System",
+        "desc": (
+            "__Welcome DM Commands__\n"
+            "*welcomedm (or /welcomedm) \u00BB Open interactive Welcome DM editor\n"
+            "*welcometest (or /welcometest) \u00BB Send test Welcome DM to private messages\n"
+            "*welcometoggle \u00BB Toggle Welcome DM on or off\n\n"
+            "__Server Channel Welcome Commands__\n"
+            "*serverwelcome (or /serverwelcome) \u00BB Open Server Welcome Channel editor\n"
+            "*serverwelcometest \u00BB Send test welcome message to server channel\n"
+            "*setwelcomechannel <#channel> \u00BB Set server welcome channel"
+        )
+    },
+    {
+        "id": "music",
+        "label": "Music",
+        "emoji": "\U0001F3B5",
+        "select_desc": "Lavalink v4 High Fidelity Music & 24/7 VC",
+        "title": "\U0001F3B5 \u00BB High Fidelity Music Suite (Lavalink v4)",
+        "desc": (
+            "__Playback Commands__\n"
+            "*play <song/url> (or /play) \u00BB Play any song or playlist in Voice Channel\n"
+            "*playnow <song> \u00BB Force-play song immediately\n"
+            "*pause / *resume \u00BB Pause or resume music playback\n"
+            "*skip / *stop \u00BB Skip song or stop and clear queue\n"
+            "*queue / *clearqueue \u00BB View or clear music queue\n"
+            "*nowplaying (or /nowplaying) \u00BB Interactive music controller panel\n"
+            "*volume <1-100> \u00BB Adjust playback volume\n"
+            "*loop / *shuffle / *autoplay \u00BB Loop mode, shuffle, smart autoplay\n"
+            "*join / *disconnect \u00BB Summon or disconnect bot from VC\n"
+            "*247 \u00BB Toggle 24/7 permanent Voice Channel stay\n"
+            "*setmusicbanner <url> \u00BB Set custom video/GIF music banner"
+        )
+    },
+    {
+        "id": "voicemaster",
+        "label": "VoiceMaster",
+        "emoji": "\U0001F50A",
+        "select_desc": "Join to Create Temporary Voice Channels",
+        "title": "\U0001F50A \u00BB VoiceMaster Temporary Channels",
+        "desc": (
+            "__Commands__\n"
+            "*vmpanel \u00BB Post Join-to-Create VoiceMaster channel setup panel\n\n"
+            "__Features__\n"
+            "\u2022 Automatically creates temporary voice channel when user joins\n"
+            "\u2022 Automatically deletes empty room when everyone leaves\n"
+            "\u2022 Channel owner gets full control to lock, hide, or rename"
         )
     },
     {
         "id": "utility",
         "label": "Utility",
         "emoji": "\u2699",
-        "select_desc": "Server Tools, User Info & System Ping",
+        "select_desc": "User Avatars, Banners, Announcements & Tools",
         "title": "\u2699 \u00BB Utility & Server Information",
         "desc": (
-            "__Utility Commands__\n"
-            "`*ping` - Real-time Discord WebSocket latency & API heartbeat\n"
-            "`*botinfo` (or `*about`) - Bot stats, memory, uptime & version\n"
-            "`*serverinfo` (or `*guildinfo`) - Detailed guild overview\n"
-            "`*userinfo [@user]` - User creation date, join date & roles\n"
-            "`*avatar [@user]` - Fetch high-resolution avatar image\n"
-            "`*banner [@user]` - Fetch profile banner image\n"
-            "`*servericon` - Fetch server icon in original resolution\n"
-            "`*uptime` - View continuous bot process uptime"
-        )
-    },
-    {
-        "id": "logging",
-        "label": "Logging",
-        "emoji": "\U0001F4DC",
-        "select_desc": "Security Breaches & Audit Trails",
-        "title": "\U0001F4DC \u00BB Security Audit & Event Logging",
-        "desc": (
-            "__Audit Trails__\n"
-            "\u2022 `Security Audits` - Real-time tracking of staff actions & events\n"
-            "\u2022 `KeyAuth Events` - Instant alerts for key creation and resets\n"
-            "\u2022 `Whitelist Actions` - Full tracking of UID grants and revokes\n"
-            "\u2022 `Member Protection` - Rogue admin tracking & punishment alerts\n\n"
-            "__Config Commands__\n"
-            "`*setlogchannel <#channel>` - Set universal bot alert channel"
-        )
-    },
-    {
-        "id": "automations",
-        "label": "Automations",
-        "emoji": "\U0001F680",
-        "select_desc": "Active Background Engines & Workers",
-        "title": "\U0001F680 \u00BB Background Automation Engines",
-        "desc": (
-            "__Automated Services__\n"
-            "\u2022 `48-Hour Feedback Scheduler` - Continuous automated DM reminders\n"
-            "\u2022 `UID Expiry Worker` - Hourly auto-checks and role revoker\n"
-            "\u2022 `Lavalink Keepalive` - Continuous node reconnection engine\n"
-            "\u2022 `Anti-Raid Sentinel` - Millisecond member join rate monitor\n\n"
             "__Commands__\n"
-            "`*schedule` - View feedback background worker status\n"
-            "`*stats` - Whitelist worker metrics & database health"
+            "*avatar [@user] (or /avatar) \u00BB View high-res avatar with download links\n"
+            "*banner [@user] (or /banner) \u00BB View high-res profile banner with download links\n"
+            "*servericon \u00BB View server icon in original resolution\n"
+            "*serverbanner \u00BB View server banner\n"
+            "*announce (or /announce) \u00BB Open interactive announcement builder\n"
+            "*ping \u00BB Real-time Discord WebSocket latency & API heartbeat\n"
+            "*setstatus / *setpresence \u00BB Configure bot status & activity\n"
+            "*lock / *unlock \u00BB Lock or unlock current text channel"
+        )
+    },
+    {
+        "id": "system",
+        "label": "System",
+        "emoji": "\U0001F504",
+        "select_desc": "Online Bot Updates & Control",
+        "title": "\U0001F504 \u00BB Bot System & Updates",
+        "desc": (
+            "__Commands__\n"
+            "*update \u00BB 1-Click online bot update from GitHub\n"
+            "*setrepo <url> \u00BB Link GitHub repo for automatic 1-click sync\n"
+            "*restart (or *reboot) \u00BB Reboot bot process safely\n"
+            "*reload \u00BB Hot-reload bot commands without downtime"
         )
     }
 ]
-
 
 def build_zynrax_page_embed(page_index: int, requester_name: str = "User") -> discord.Embed:
     if page_index == 0:
@@ -9876,7 +9741,7 @@ async def update_cmd(ctx, mode: str = "git", *, arg: str = None):
                     if resp.status != 200:
                         await msg.edit(content=f"\u274C **Failed to download:** HTTP {resp.status}")
                         return
-                    new_code = await resp.text(encoding="utf-8")
+                    new_code = (await resp.text(encoding="utf-8")).lstrip('\ufeff')
 
             try:
                 ast.parse(new_code)
