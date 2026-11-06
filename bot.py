@@ -9278,6 +9278,8 @@ def get_home_page_data():
     client_id = bot.user.id if bot.user else "1393529322895048705"
     bot_name = bot.user.name if bot.user else "SpyDerMan\u2020"
     invite_url = f"https://discord.com/oauth2/authorize?client_id={client_id}&permissions=8&scope=bot%20applications.commands"
+    support_url = "https://discord.gg/w5Qvp66KC"
+    website_url = "https://discord.gg/w5Qvp66KC"
     total_cmds = (len(bot.commands) + len(bot.tree.get_commands())) if hasattr(bot, "commands") else 149
 
     return {
@@ -9291,21 +9293,20 @@ def get_home_page_data():
             "\u2022 **My Prefix is** *\n"
             f"\u2022 **Total Commands:** {total_cmds}\n"
             "\u2022 **Choose a Specific Module of your Desire**\n"
-            ">>> \U0001F4CB \u00BB Whitelist\n"
-            "\U0001F511 \u00BB KeyAuth\n"
-            "\U0001F3AB \u00BB Ticket\n"
-            "\U0001F4DD \u00BB Feedback\n"
-            "\U0001F6E1 \u00BB Verification\n"
-            "\U0001F44B \u00BB Welcomer\n"
-            "\U0001F3B5 \u00BB Music\n"
-            "\U0001F50A \u00BB VoiceMaster\n"
-            "\u2699 \u00BB Utility\n"
-            "\U0001F504 \u00BB System\n\n"
+            ">>> \U0001F4CB \u2003\u00BB\u2002 Whitelist\n"
+            "\U0001F511 \u2003\u00BB\u2002 KeyAuth\n"
+            "\U0001F3AB \u2003\u00BB\u2002 Ticket\n"
+            "\U0001F4DD \u2003\u00BB\u2002 Feedback\n"
+            "\U0001F6E1 \u2003\u00BB\u2002 Verification\n"
+            "\U0001F44B \u2003\u00BB\u2002 Welcomer\n"
+            "\U0001F3B5 \u2003\u00BB\u2002 Music\n"
+            "\U0001F50A \u2003\u00BB\u2002 VoiceMaster\n"
+            "\u2699\uFE0F \u2003\u00BB\u2002 Utility\n"
+            "\U0001F504 \u2003\u00BB\u2002 System\n\n"
             "\U0001F517 **Links**\n"
-            f"[Invite Me]({invite_url}) | [Support Server](https://discord.gg/w5Qvp66KC) | [Website](https://auth.mani272api.xyz)"
+            f"[Invite Me]({invite_url}) | [Support Server]({support_url}) | [Website]({website_url})"
         )
     }
-
 
 ZYNRAX_PAGES = [
     {
@@ -9504,7 +9505,7 @@ def build_zynrax_page_embed(page_index: int, requester_name: str = "User") -> di
     embed = discord.Embed(
         title=page["title"],
         description=page["desc"],
-        color=0x2B2D31
+        color=0x0055FF
     )
     if bot.user and bot.user.display_avatar:
         embed.set_thumbnail(url=bot.user.display_avatar.url)
@@ -9548,16 +9549,6 @@ class ByteZynraxModuleSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         page_idx = int(self.values[0])
-        # If Components V2 LayoutView is supported:
-        if hasattr(discord.ui, "LayoutView") and hasattr(discord.ui, "Container"):
-            try:
-                new_view = build_zynrax_layout_view(page_idx, interaction.user.name)
-                await interaction.response.edit_message(view=new_view)
-                return
-            except Exception:
-                pass
-
-        # Fallback to standard Embed view
         self.view.current_page = page_idx
         for opt in self.options:
             opt.default = (opt.value == str(page_idx)) if page_idx != 0 else False
@@ -9565,42 +9556,8 @@ class ByteZynraxModuleSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=self.view)
 
 
-def build_zynrax_layout_view(page_index: int = 0, requester_name: str = "User"):
-    """Builds native Components V2 LayoutView with Container wrapping dropdown inside."""
-    if not (hasattr(discord.ui, "LayoutView") and hasattr(discord.ui, "Container")):
-        return None
-
-    if page_index == 0:
-        page = get_home_page_data()
-    else:
-        page = ZYNRAX_PAGES[page_index]
-
-    bot_name = bot.user.name if bot.user else "SpyDerMan\u2020"
-    body_text = f"### {page['title']}\n\n{page['desc']}"
-    footer_text = f"-# Powered By {bot_name} | Designed By diewithvoid"
-
-    action_row = discord.ui.ActionRow()
-    action_row.add_item(ByteZynraxModuleSelect(current_page=page_index))
-
-    container_components = [
-        discord.ui.TextDisplay(body_text),
-        action_row,
-        discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
-        discord.ui.TextDisplay(footer_text)
-    ]
-
-    container = discord.ui.Container(
-        *container_components,
-        accent_colour=0x2B2D31
-    )
-
-    view = discord.ui.LayoutView(timeout=None)
-    view.add_item(container)
-    return view
-
-
 class ByteZynraxHelpView(discord.ui.View):
-    """Fallback standard view when LayoutView is not supported."""
+    """Standard Blue Embed Help View with attached dropdown."""
     def __init__(self, current_page: int = 0, author_id: int = None):
         super().__init__(timeout=None)
         self.current_page = current_page
@@ -9610,15 +9567,7 @@ class ByteZynraxHelpView(discord.ui.View):
 
 @bot.command(name="help", aliases=["helpme", "cmds", "bothelp", "modules"])
 async def help_cmd(ctx):
-    """Displays official Zynrax-style interactive help dashboard."""
-    if hasattr(discord.ui, "LayoutView") and hasattr(discord.ui, "Container"):
-        try:
-            view = build_zynrax_layout_view(0, ctx.author.name)
-            await ctx.send(view=view)
-            return
-        except Exception:
-            pass
-
+    """Displays official interactive blue help dashboard with right-hand logo."""
     embed = build_zynrax_page_embed(0, ctx.author.name)
     view = ByteZynraxHelpView(current_page=0, author_id=ctx.author.id)
     await ctx.send(embed=embed, view=view)
@@ -9626,18 +9575,9 @@ async def help_cmd(ctx):
 
 @bot.tree.command(name="help", description="Open official interactive Command Center")
 async def help_slash(interaction: discord.Interaction):
-    if hasattr(discord.ui, "LayoutView") and hasattr(discord.ui, "Container"):
-        try:
-            view = build_zynrax_layout_view(0, interaction.user.name)
-            await interaction.response.send_message(view=view)
-            return
-        except Exception:
-            pass
-
     embed = build_zynrax_page_embed(0, interaction.user.name)
     view = ByteZynraxHelpView(current_page=0, author_id=interaction.user.id)
     await interaction.response.send_message(embed=embed, view=view)
-
 
 # ==============================================================================
 # ONLINE BOT UPDATER & RESTART SYSTEM (*update, *restart, *reload)
