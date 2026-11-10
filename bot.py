@@ -3822,16 +3822,71 @@ async def setkeychannel_slash(interaction: discord.Interaction, channel: discord
 
 
 # ==========================================
-# SECOND KEYAUTH (5 PACKAGES SDK) IMPLEMENTATION
+# SECOND KEYAUTH (BASIC PANEL SDK) IMPLEMENTATION
 # ==========================================
 
 DEFAULT_SECOND_KEYAUTH_APPS = [
     {"id": "pkg_basic_panel", "name": "BASIC PANEL", "package_id": "e52c1515c53453b85d0d4e87", "version": "28"},
-    {"id": "pkg_aimsilent_exe", "name": "AIMSILENT EXE", "package_id": "affc8da8fd5ace99981ab877", "version": "28"},
-    {"id": "pkg_uid_bypass", "name": "UID BYPASS", "package_id": "cb921031dc43197e8ccb6828", "version": "28"},
-    {"id": "pkg_external_panel", "name": "EXTERNAL PANEL", "package_id": "3d1c6c948b4715fbd2fada2d", "version": "28"},
-    {"id": "pkg_pvt_aimkill", "name": "PVT AIMKILL", "package_id": "d4f0ce93349f236711344cb5", "version": "28"},
 ]
+
+DEFAULT_SECOND_AUTH_INITIAL_KEYS = {
+    "1": [
+        "BYTE-942C-BD7B-B2AE-A7FF",
+        "BYTE-125E-DC6D-D7EA-8BF6",
+        "BYTE-74DE-0CFD-E489-F6FB",
+        "BYTE-BB91-7709-D3A1-E39E",
+        "BYTE-8974-347D-B314-353C",
+        "BYTE-7426-81F2-A5D7-5310",
+        "BYTE-6F2B-20EE-ADE6-8760",
+        "BYTE-06FD-DAFD-0C1F-0AD9",
+        "BYTE-70A4-2031-F7F2-2FD7",
+        "BYTE-D742-3B28-3F36-1398"
+    ],
+    "7": [
+        "BYTE-9002-B2B4-751A-1BC9",
+        "BYTE-DB7E-8DC8-5DFD-3800",
+        "BYTE-7C73-3329-F465-EC81",
+        "BYTE-92F3-FB0B-0895-80AB",
+        "BYTE-8968-6CAE-52B3-AE6F",
+        "BYTE-29B8-CC67-4405-46E1",
+        "BYTE-EEA3-1115-9B6B-A0F2",
+        "BYTE-1CD9-4C61-A9DA-054E",
+        "BYTE-D11C-2F3F-CF99-1B99",
+        "BYTE-1031-6ABC-10BF-8344",
+        "BYTE-4A30-A6C1-6F0B-B35E",
+        "BYTE-CD01-DBE7-6CC2-F186",
+        "BYTE-27B7-F257-8B83-98FB",
+        "BYTE-9822-D051-0D54-3934",
+        "BYTE-1BD0-17A9-F704-CE6B",
+        "BYTE-34A9-96C3-2C60-A374",
+        "BYTE-F1F4-0E5E-FFD1-E5EA",
+        "BYTE-A4F3-8742-F4DD-291E",
+        "BYTE-5082-FD80-578A-44C5",
+        "BYTE-48DA-18C8-F38F-720F"
+    ],
+    "30": [
+        "BYTE-77CB-EB09-DA5F-C4B3",
+        "BYTE-FFE8-FE43-D551-0FD2",
+        "BYTE-C260-BE47-C7A2-CC05",
+        "BYTE-14D7-3971-7E7F-1C39",
+        "BYTE-4757-04D2-7D63-3143",
+        "BYTE-2703-20AB-7DB0-C9F0",
+        "BYTE-F686-1D07-37C5-DE00",
+        "BYTE-DA28-B397-8A07-AB04",
+        "BYTE-1F43-7752-28A2-E2FC",
+        "BYTE-CF7A-8121-6C70-E17C",
+        "BYTE-C558-B359-16C1-7655",
+        "BYTE-8BB2-0012-AE1F-B8B5",
+        "BYTE-9181-EBAA-929C-71C3",
+        "BYTE-BA6E-228A-DA4A-4C81",
+        "BYTE-B558-CC3B-AB3E-B839",
+        "BYTE-587E-102C-6F8B-34E0",
+        "BYTE-7E70-BBA9-BF2D-C8EE",
+        "BYTE-F04C-B18D-B6F0-D9AC",
+        "BYTE-388E-7A67-8F1C-A48A",
+        "BYTE-825D-572B-7E61-5082"
+    ]
+}
 
 
 async def second_keyauth_request(action: str, extra: dict = None, package_id: str = None) -> dict:
@@ -3882,51 +3937,6 @@ async def second_keyauth_request(action: str, extra: dict = None, package_id: st
 SECOND_AUTH_STOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "second_auth_stock.json")
 
 
-def load_second_auth_stock() -> dict:
-    """Loads the pre-generated real key stock for Second Auth packages."""
-    if os.path.exists(SECOND_AUTH_STOCK_FILE):
-        try:
-            with open(SECOND_AUTH_STOCK_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Error loading second_auth_stock.json: {e}")
-    stock = {
-        "packages": {
-            pkg["package_id"]: {
-                "name": pkg["name"],
-                "durations": {"1": [], "7": [], "30": []},
-                "keys": []
-            }
-            for pkg in DEFAULT_SECOND_KEYAUTH_APPS
-        },
-        "history": []
-    }
-    return stock
-
-
-def save_second_auth_stock(stock: dict):
-    """Saves stock to second_auth_stock.json strictly UTF-8 without BOM."""
-    try:
-        with open(SECOND_AUTH_STOCK_FILE, "w", encoding="utf-8") as f:
-            json.dump(stock, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error saving second_auth_stock.json: {e}")
-
-
-def get_second_auth_package_by_query(query: str) -> dict | None:
-    """Matches user query against Second Auth package name, ID, or slug."""
-    if not query:
-        return None
-    q = query.strip().lower()
-    for app in DEFAULT_SECOND_KEYAUTH_APPS:
-        if q == app["package_id"].lower() or q == app["id"].lower() or q == app["name"].lower():
-            return app
-    for app in DEFAULT_SECOND_KEYAUTH_APPS:
-        if q in app["name"].lower() or q in app["id"].lower():
-            return app
-    return None
-
-
 def get_package_stock_counts(pkg_entry: dict) -> tuple[int, dict]:
     """Returns total available keys and duration breakdown for a package."""
     durations = pkg_entry.get("durations", {})
@@ -3943,25 +3953,72 @@ def get_package_stock_counts(pkg_entry: dict) -> tuple[int, dict]:
     return total, breakdown
 
 
+def load_second_auth_stock() -> dict:
+    """Loads the pre-generated real key stock for BASIC PANEL, auto-seeding if empty."""
+    basic_pid = "e52c1515c53453b85d0d4e87"
+    stock = None
+    if os.path.exists(SECOND_AUTH_STOCK_FILE):
+        try:
+            with open(SECOND_AUTH_STOCK_FILE, "r", encoding="utf-8") as f:
+                stock = json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading second_auth_stock.json: {e}")
+
+    if not stock or not isinstance(stock, dict):
+        stock = {"packages": {}, "history": []}
+
+    # Restrict packages dict strictly to BASIC PANEL
+    stock.setdefault("packages", {})
+    stock["packages"] = {
+        basic_pid: stock["packages"].get(basic_pid, {
+            "name": "BASIC PANEL",
+            "durations": {"1": [], "7": [], "30": []},
+            "keys": []
+        })
+    }
+    pkg_entry = stock["packages"][basic_pid]
+    pkg_entry["name"] = "BASIC PANEL"
+    pkg_entry.setdefault("durations", {"1": [], "7": [], "30": []})
+    pkg_entry.setdefault("keys", [])
+
+    # Auto-seed initial 50 real keys if stock is 0 (handles online hosting sync)
+    total_avail, _ = get_package_stock_counts(pkg_entry)
+    if total_avail == 0:
+        for d_key, k_list in DEFAULT_SECOND_AUTH_INITIAL_KEYS.items():
+            pkg_entry["durations"][d_key] = list(k_list)
+        save_second_auth_stock(stock)
+
+    return stock
+
+
+def save_second_auth_stock(stock: dict):
+    """Saves stock to second_auth_stock.json strictly UTF-8 without BOM."""
+    try:
+        with open(SECOND_AUTH_STOCK_FILE, "w", encoding="utf-8") as f:
+            json.dump(stock, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error saving second_auth_stock.json: {e}")
+
+
+def get_second_auth_package_by_query(query: str = None) -> dict:
+    """Always resolves to the active BASIC PANEL package."""
+    return DEFAULT_SECOND_KEYAUTH_APPS[0]
+
+
 def add_second_auth_keys(package_id: str, raw_keys: list[str], duration_days: int = None) -> tuple[int, int, str]:
-    """Adds bulk real keys to a package stock pool with optional duration bucket."""
+    """Adds bulk real keys to BASIC PANEL stock pool."""
     stock = load_second_auth_stock()
-    if "packages" not in stock:
-        stock["packages"] = {}
-    pkg_entry = stock["packages"].setdefault(package_id, {
-        "name": package_id,
+    basic_pid = "e52c1515c53453b85d0d4e87"
+    pkg_entry = stock["packages"].setdefault(basic_pid, {
+        "name": "BASIC PANEL",
         "durations": {"1": [], "7": [], "30": []},
         "keys": []
     })
 
-    dur_key = str(duration_days) if duration_days in (1, 7, 30, 90, 365) else None
-    if dur_key:
-        pkg_entry.setdefault("durations", {})
-        target_list = pkg_entry["durations"].setdefault(dur_key, [])
-    else:
-        target_list = pkg_entry.setdefault("keys", [])
+    dur_key = str(duration_days) if duration_days in (1, 7, 30, 90, 365) else "30"
+    pkg_entry.setdefault("durations", {})
+    target_list = pkg_entry["durations"].setdefault(dur_key, [])
 
-    # Gather all existing keys across all pools to avoid duplicates
     existing_keys = set()
     for d_list in pkg_entry.get("durations", {}).values():
         existing_keys.update(k.strip() for k in d_list)
@@ -3977,15 +4034,16 @@ def add_second_auth_keys(package_id: str, raw_keys: list[str], duration_days: in
 
     save_second_auth_stock(stock)
     total_avail, _ = get_package_stock_counts(pkg_entry)
-    return added, total_avail, pkg_entry.get("name", package_id)
+    return added, total_avail, "BASIC PANEL"
 
 
-def claim_second_auth_key(package_id: str, duration_days: int = 30, claimed_by: str = None) -> tuple[bool, str, str, str]:
+def claim_second_auth_key(package_id: str = None, duration_days: int = 30, claimed_by: str = None) -> tuple[bool, str, str, str]:
     """Pops a real working key matching duration from stock and records audit trail."""
     stock = load_second_auth_stock()
-    pkg_entry = stock.get("packages", {}).get(package_id)
+    basic_pid = "e52c1515c53453b85d0d4e87"
+    pkg_entry = stock["packages"].get(basic_pid)
     if not pkg_entry:
-        return False, "", "Target Package", ""
+        return False, "", "BASIC PANEL", ""
 
     dur_key = str(duration_days)
     real_key = None
@@ -4003,71 +4061,69 @@ def claim_second_auth_key(package_id: str, duration_days: int = 30, claimed_by: 
 
     # 3. Fallback to any available duration pool
     if not real_key:
-        for fallback_dur, f_list in pkg_entry.get("durations", {}).items():
+        for fallback_dur in ["30", "7", "1"]:
+            f_list = pkg_entry.get("durations", {}).get(fallback_dur, [])
             if f_list:
                 real_key = f_list.pop(0)
                 claimed_duration = f"{fallback_dur} Days Pool"
                 break
 
     if not real_key:
-        return False, "", pkg_entry.get("name", package_id), ""
+        return False, "", "BASIC PANEL", ""
 
     stock.setdefault("history", []).append({
         "key": real_key,
-        "package_id": package_id,
-        "package_name": pkg_entry.get("name", package_id),
+        "package_id": basic_pid,
+        "package_name": "BASIC PANEL",
         "requested_duration": duration_days,
         "claimed_duration": claimed_duration,
         "claimed_by": str(claimed_by or "Unknown"),
         "claimed_at": datetime.utcnow().isoformat()
     })
     save_second_auth_stock(stock)
-    return True, real_key, pkg_entry.get("name", package_id), claimed_duration
+    return True, real_key, "BASIC PANEL", claimed_duration
 
 
 def build_second_auth_stock_embed() -> discord.Embed:
-    """Builds a rich overview embed of live stock across all 5 packages with duration breakdown."""
+    """Builds a rich overview embed of live stock for BASIC PANEL."""
     stock = load_second_auth_stock()
     embed = discord.Embed(
         title="\U0001F4E6 BYTE CORPORATION \u00BB Second Auth Live Inventory",
         color=0x0055FF,
         timestamp=datetime.utcnow()
     )
-    total_all = 0
     total_used = len(stock.get("history", []))
 
-    for app in DEFAULT_SECOND_KEYAUTH_APPS:
-        pkg_id = app["package_id"]
-        pkg_entry = stock.get("packages", {}).get(pkg_id, {})
-        avail, b_down = get_package_stock_counts(pkg_entry)
-        total_all += avail
+    basic_pid = "e52c1515c53453b85d0d4e87"
+    pkg_entry = stock["packages"].get(basic_pid, {})
+    avail, b_down = get_package_stock_counts(pkg_entry)
 
-        dur_parts = []
-        for d in ["1", "7", "30"]:
-            cnt = b_down.get(d, 0)
-            dur_parts.append(f"`{d}d`: **{cnt}**")
-        if b_down.get("general", 0) > 0:
-            dur_parts.append(f"`gen`: **{b_down['general']}**")
+    dur_parts = []
+    for d in ["1", "7", "30"]:
+        cnt = b_down.get(d, 0)
+        dur_parts.append(f"`{d}d`: **{cnt}**")
+    if b_down.get("general", 0) > 0:
+        dur_parts.append(f"`gen`: **{b_down['general']}**")
 
-        dur_summary = " | ".join(dur_parts)
-        status_line = f"\u2705 **{avail}** Keys Available ({dur_summary})" if avail > 0 else "\u274C **0** Keys (Out of Stock)"
-        embed.add_field(
-            name=f"\U0001F4E6 {app['name']}",
-            value=f"{status_line}\n`ID: {pkg_id}`",
-            inline=False
-        )
-
+    dur_summary = " | ".join(dur_parts)
+    status_line = f"\u2705 **{avail}** Keys Available ({dur_summary})" if avail > 0 else "\u274C **0** Keys (Out of Stock)"
     embed.add_field(
-        name="\U0001F4CA Global Inventory Summary",
-        value=f"\u2022 Total Available Keys: `{total_all}`\n\u2022 Total Claimed / Used: `{total_used}`",
+        name="\U0001F4E6 BASIC PANEL",
+        value=f"{status_line}\n`ID: {basic_pid}`",
         inline=False
     )
-    embed.set_footer(text="Use *addsecondkeys <package> [duration] <keys> or Restock button to add keys")
+
+    embed.add_field(
+        name="\U0001F4CA Inventory Summary",
+        value=f"\u2022 Total Available Keys: `{avail}`\n\u2022 Total Claimed / Used: `{total_used}`",
+        inline=False
+    )
+    embed.set_footer(text="Use *addsecondkeys [duration] <keys> or Restock button to add keys")
     return embed
 
 
 async def second_keyauth_generate_key(
-    package_id: str,
+    package_id: str = "e52c1515c53453b85d0d4e87",
     duration_days: int = 30,
     prefix: str = "BYTE",
     hwid_enabled: bool = True,
@@ -4076,7 +4132,7 @@ async def second_keyauth_generate_key(
     note: str = None,
     claimed_by: str = None
 ) -> tuple[bool, dict, str]:
-    """Retrieves a verified real license key matching duration from stock for Second KeyAuth."""
+    """Retrieves a verified real license key matching duration from stock for BASIC PANEL."""
     days = int(duration_days) if duration_days else 30
     devices = int(max_devices) if max_devices else 1
 
@@ -4084,7 +4140,7 @@ async def second_keyauth_generate_key(
     if custom_key and custom_key.strip():
         return True, {
             "license_key": custom_key.strip().upper(),
-            "package_id": package_id,
+            "package_id": "e52c1515c53453b85d0d4e87",
             "duration_days": days,
             "max_devices": devices,
             "hwid_enabled": 1 if hwid_enabled else 0,
@@ -4093,23 +4149,23 @@ async def second_keyauth_generate_key(
         }, "Custom key assigned."
 
     # Pop key from pre-stocked real keys
-    ok, real_key, pkg_name, assigned_dur = claim_second_auth_key(package_id, duration_days=days, claimed_by=claimed_by)
+    ok, real_key, pkg_name, assigned_dur = claim_second_auth_key("e52c1515c53453b85d0d4e87", duration_days=days, claimed_by=claimed_by)
     if ok and real_key:
         return True, {
             "license_key": real_key,
-            "package_id": package_id,
+            "package_id": "e52c1515c53453b85d0d4e87",
             "duration_days": days,
             "assigned_duration": assigned_dur,
             "max_devices": devices,
             "hwid_enabled": 1 if hwid_enabled else 0,
             "status": "unused",
             "source": "Second Auth Database Stock",
-        }, f"Verified real key assigned for {pkg_name} ({assigned_dur})."
+        }, f"Verified real key assigned for BASIC PANEL ({assigned_dur})."
 
     # If stock is empty
     return False, {}, (
-        f"\u26A0\uFE0F **OUT OF STOCK:** `{pkg_name}` ke liye `{days} Days` stock me koi real key available nahi hai!\n"
-        f"Kripya Web Admin Panel se keys generate karke `*addsecondkeys {pkg_name} {days} <keys>` se stock add karein."
+        f"\u26A0\uFE0F **OUT OF STOCK:** `BASIC PANEL` ke liye `{days} Days` stock me koi real key available nahi hai!\n"
+        f"Kripya Web Admin Panel se keys generate karke `*addsecondkeys {days} <keys>` se stock add karein."
     )
 
 
@@ -4134,28 +4190,20 @@ def build_second_keyauth_panel_embed(guild: discord.Guild = None) -> discord.Emb
     api_domain = cfg["api_url"].split("/")[2] if "/" in cfg["api_url"] else cfg["api_url"]
 
     stock = load_second_auth_stock()
-    pkg_lines = []
-    for a in DEFAULT_SECOND_KEYAUTH_APPS:
-        pkg_id = a["package_id"]
-        pkg_entry = stock.get("packages", {}).get(pkg_id, {})
-        avail_cnt, b_down = get_package_stock_counts(pkg_entry)
-        if avail_cnt > 0:
-            d_parts = [f"{d}d:{b_down[d]}" for d in ["1", "7", "30"] if b_down.get(d, 0) > 0]
-            if b_down.get("general", 0) > 0:
-                d_parts.append(f"gen:{b_down['general']}")
-            dur_str = f" ({', '.join(d_parts)})" if d_parts else ""
-            badge = f"`\u2705 {avail_cnt} in stock{dur_str}`"
-        else:
-            badge = "`\u274C 0 (Out of Stock)`"
-        pkg_lines.append(f"\u2022 **{a['name']}** ({badge})\n  `ID: {pkg_id}`")
-    pkg_list = "\n".join(pkg_lines)
+    basic_pid = "e52c1515c53453b85d0d4e87"
+    pkg_entry = stock.get("packages", {}).get(basic_pid, {})
+    avail_cnt, b_down = get_package_stock_counts(pkg_entry)
+    dur_parts = [f"`{d}d`: **{b_down.get(d, 0)}**" for d in ["1", "7", "30"]]
+    dur_str = f" ({', '.join(dur_parts)})" if dur_parts else ""
+    badge = f"`\u2705 {avail_cnt} in stock{dur_str}`" if avail_cnt > 0 else "`\u274C 0 (Out of Stock)`"
 
     desc_lines = [
         "Welcome to the **Second Auth (Pro SDK) Management Portal**.",
         "Use the interactive buttons below to claim license keys from stock, inspect key status, test HWID authentication, or view live inventory.",
         "",
-        "\U0001F4E6 **Authorized Packages & Live Stock**",
-        pkg_list,
+        "\U0001F4E6 **Authorized Package & Live Stock**",
+        f"\u2022 **BASIC PANEL** ({badge})",
+        f"  `ID: {basic_pid}`",
         "",
         "\U0001F6E1\uFE0F **Security Scope & Permissions**",
         f"\u2022 **Authorized Role:** {key_role_str}",
@@ -4177,14 +4225,14 @@ def build_second_keyauth_panel_embed(guild: discord.Guild = None) -> discord.Emb
 # --- Second KeyAuth Modals ---
 
 class SecondKeyAuthGenModal(discord.ui.Modal):
-    def __init__(self, package_id: str, package_name: str):
-        super().__init__(title=f"Claim: {package_name[:25]}")
+    def __init__(self, package_id: str = "e52c1515c53453b85d0d4e87", package_name: str = "BASIC PANEL"):
+        super().__init__(title="Claim: BASIC PANEL")
         self.package_id = package_id
         self.package_name = package_name
 
         self.duration_input = discord.ui.TextInput(
-            label="Duration (In Days)",
-            placeholder="e.g. 1, 7, 30, 90, 365",
+            label="Duration (In Days: 1, 7, 30)",
+            placeholder="e.g. 1, 7, 30",
             default="30",
             required=True,
             max_length=5,
@@ -4228,7 +4276,7 @@ class SecondKeyAuthGenModal(discord.ui.Modal):
         try:
             days = int(self.duration_input.value.strip())
         except ValueError:
-            await interaction.followup.send("\u274C Duration must be a valid number of days (e.g. 30).", ephemeral=True)
+            await interaction.followup.send("\u274C Duration must be a valid number of days (e.g. 1, 7, 30).", ephemeral=True)
             return
 
         hwid_on = self.hwid_toggle.value.strip() != "0"
@@ -4248,12 +4296,12 @@ class SecondKeyAuthGenModal(discord.ui.Modal):
         if ok and lic:
             key_val = lic.get("license_key")
             embed = discord.Embed(
-                title="\u2705 License Key Claimed (Second Auth)",
+                title="\u2705 License Key Claimed (BASIC PANEL)",
                 color=0x00FF00,
                 timestamp=datetime.utcnow()
             )
             embed.description = f"```\n{key_val}\n```"
-            embed.add_field(name="\U0001F4E6 Package", value=f"`{self.package_name}`", inline=True)
+            embed.add_field(name="\U0001F4E6 Package", value="`BASIC PANEL`", inline=True)
             embed.add_field(name="\u23F3 Duration", value=f"`{days} Days`", inline=True)
             embed.add_field(name="\U0001F512 HWID Lock", value=f"`{'ENABLED (1 Device)' if hwid_on else 'DISABLED'}`", inline=True)
             embed.add_field(name="\U0001F4CA Source", value=f"`{lic.get('source', 'Stock Pool')}`", inline=True)
@@ -4269,11 +4317,18 @@ class SecondKeyAuthGenModal(discord.ui.Modal):
 
 
 class SecondKeyAuthRestockModal(discord.ui.Modal):
-    def __init__(self, package_id: str, package_name: str):
-        super().__init__(title=f"Restock: {package_name[:20]}")
+    def __init__(self, package_id: str = "e52c1515c53453b85d0d4e87", package_name: str = "BASIC PANEL"):
+        super().__init__(title="Restock: BASIC PANEL")
         self.package_id = package_id
         self.package_name = package_name
 
+        self.duration_input = discord.ui.TextInput(
+            label="Duration Pool (1, 7, or 30 Days)",
+            placeholder="1, 7, or 30",
+            default="30",
+            required=True,
+            max_length=5
+        )
         self.keys_input = discord.ui.TextInput(
             label="Bulk Real Keys (1 per line or space/comma)",
             style=discord.TextStyle.paragraph,
@@ -4281,23 +4336,29 @@ class SecondKeyAuthRestockModal(discord.ui.Modal):
             required=True,
             max_length=4000
         )
+        self.add_item(self.duration_input)
         self.add_item(self.keys_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        try:
+            target_dur = int(self.duration_input.value.strip())
+        except ValueError:
+            target_dur = 30
+
         import re
         tokens = [k.strip() for k in re.split(r"[\r\n,;\s]+", self.keys_input.value) if k.strip()]
         if not tokens:
             await interaction.followup.send("\u274C No valid keys found in input.", ephemeral=True)
             return
 
-        added, total_avail, pkg_name = add_second_auth_keys(self.package_id, tokens)
+        added, total_avail, pkg_name = add_second_auth_keys(self.package_id, tokens, duration_days=target_dur)
         embed = discord.Embed(
-            title="\U0001F4E6 Stock Updated (Second Auth)",
+            title="\U0001F4E6 Stock Updated (BASIC PANEL)",
             color=0x00FF00,
             timestamp=datetime.utcnow()
         )
-        embed.add_field(name="\U0001F4E6 Package", value=f"`{pkg_name}`", inline=True)
+        embed.add_field(name="\U0001F4E6 Package", value=f"`BASIC PANEL ({target_dur}d Pool)`", inline=True)
         embed.add_field(name="\u2795 Keys Added", value=f"`{added}` Keys", inline=True)
         embed.add_field(name="\U0001F4CA Available in Stock", value=f"`{total_avail}` Keys", inline=True)
         embed.set_footer(text=f"Restocked by: {interaction.user.name}")
@@ -4409,61 +4470,6 @@ class SecondKeyAuthResetHWIDModal(discord.ui.Modal, title="Reset HWID / Deauth")
             await dispatch_second_keyauth_log(interaction.guild, embed)
 
 
-# --- Dropdown Menu for Second KeyAuth Package Selection ---
-
-class SecondKeyAuthAppSelect(discord.ui.Select):
-    def __init__(self, action_type: str = "key"):
-        self.action_type = action_type
-        stock = load_second_auth_stock()
-        options = []
-        for app in DEFAULT_SECOND_KEYAUTH_APPS:
-            app_id = app.get("id")
-            app_name = app.get("name")
-            pkg_id = app.get("package_id", "")
-            stock_count = len(stock.get("packages", {}).get(pkg_id, {}).get("keys", []))
-            desc = f"Stock: {stock_count} Available | Package: {pkg_id[:12]}..."
-            options.append(discord.SelectOption(
-                label=app_name[:100],
-                value=app_id,
-                description=desc,
-                emoji="\U0001F4E6",
-            ))
-
-        placeholder_text = "\U0001F4E6 Select target package to restock keys..." if action_type == "restock" else "\U0001F4E6 Select target package to claim key..."
-        super().__init__(
-            placeholder=placeholder_text,
-            min_values=1,
-            max_values=1,
-            custom_id=f"second_keyauth_package_dropdown_{action_type}",
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
-        if not allowed:
-            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
-            return
-
-        has_perm, perm_reason = has_second_keyauth_permission(interaction.user)
-        if not has_perm:
-            await interaction.response.send_message(f"\u274C **Permission Denied:** {perm_reason}", ephemeral=True)
-            return
-
-        selected_app_id = self.values[0]
-        selected_app = next((a for a in DEFAULT_SECOND_KEYAUTH_APPS if a["id"] == selected_app_id), DEFAULT_SECOND_KEYAUTH_APPS[0])
-
-        if self.action_type == "restock":
-            await interaction.response.send_modal(SecondKeyAuthRestockModal(selected_app["package_id"], selected_app["name"]))
-        else:
-            await interaction.response.send_modal(SecondKeyAuthGenModal(selected_app["package_id"], selected_app["name"]))
-
-
-class SecondKeyAuthAppSelectView(discord.ui.View):
-    def __init__(self, action_type: str = "key"):
-        super().__init__(timeout=300)
-        self.add_item(SecondKeyAuthAppSelect(action_type=action_type))
-
-
 # --- Persistent Second KeyAuth Control View ---
 
 class SecondKeyAuthControlView(discord.ui.View):
@@ -4496,12 +4502,7 @@ class SecondKeyAuthControlView(discord.ui.View):
         if not has_perm:
             await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
             return
-        view = SecondKeyAuthAppSelectView(action_type="key")
-        await interaction.response.send_message(
-            content="\U0001F4E6 **Select Target Package:** Choose a package from the dropdown below to claim a verified license key from stock:",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_modal(SecondKeyAuthGenModal("e52c1515c53453b85d0d4e87", "BASIC PANEL"))
 
     @discord.ui.button(
         label="Check Key",
@@ -4584,12 +4585,7 @@ class SecondKeyAuthControlView(discord.ui.View):
         if not has_perm:
             await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
             return
-        view = SecondKeyAuthAppSelectView(action_type="restock")
-        await interaction.response.send_message(
-            content="\U0001F4E6 **Select Package to Restock:** Choose a package below to paste bulk keys from your Web Admin panel:",
-            view=view,
-            ephemeral=True
-        )
+        await interaction.response.send_modal(SecondKeyAuthRestockModal("e52c1515c53453b85d0d4e87", "BASIC PANEL"))
 
     @discord.ui.button(
         label="Version Info",
@@ -4614,7 +4610,7 @@ class SecondKeyAuthControlView(discord.ui.View):
         )
         embed.add_field(name="\U0001F310 Endpoint", value=f"`{cfg['api_url']}`", inline=False)
         embed.add_field(name="\U0001F504 Configured Version", value=f"`{cfg['version']}`", inline=True)
-        embed.add_field(name="\U0001F4E6 Active Package", value=f"`{cfg['package_id']}`", inline=True)
+        embed.add_field(name="\U0001F4E6 Active Package", value="`BASIC PANEL`", inline=True)
         embed.add_field(name="\U0001F4AC Server Status", value=f"`{res.get('message', 'Checked')}`", inline=False)
         if res.get("data"):
             embed.add_field(name="\U0001F4CA Data", value=f"```{json.dumps(res['data'], indent=2)[:500]}```", inline=False)
@@ -4626,7 +4622,7 @@ class SecondKeyAuthControlView(discord.ui.View):
 
 @bot.command(name="secondkeypanel", aliases=["secondkeyauth", "secondpanel", "skeypanel", "secondauth", "auth2", "keypanel2"])
 async def secondkeypanel_cmd(ctx):
-    """Posts the Second Auth Management Panel."""
+    """Posts the Second Auth Management Panel for BASIC PANEL."""
     allowed, ch_reason = is_second_keyauth_channel_allowed(ctx.channel.id)
     if not allowed:
         await ctx.reply(f"\u274C **Wrong Channel:** {ch_reason}")
@@ -4640,7 +4636,7 @@ async def secondkeypanel_cmd(ctx):
     await ctx.send(embed=embed, view=view)
 
 
-@bot.tree.command(name="secondkeypanel", description="Post the Second Auth Management Panel (5 Authorized Packages)")
+@bot.tree.command(name="secondkeypanel", description="Post the Second Auth Management Panel (BASIC PANEL Authorized)")
 async def secondkeypanel_slash(interaction: discord.Interaction):
     allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
     if not allowed:
@@ -4657,51 +4653,49 @@ async def secondkeypanel_slash(interaction: discord.Interaction):
 
 
 @bot.command(name="addsecondkeys", aliases=["addsecondstock", "addstock2", "restocksecond"])
-async def addsecondkeys_cmd(ctx, package: str = None, *, keys: str = None):
-    """Adds bulk keys to a Second Auth package stock.
-    Usage: *addsecondkeys <package_name_or_id> <key1 key2 key3 ...>
+async def addsecondkeys_cmd(ctx, *, args: str = None):
+    """Adds bulk keys to BASIC PANEL stock.
+    Usage: *addsecondkeys [duration_days] <key1 key2 key3 ...>
+    Example: *addsecondkeys 30 BYTE-XXXX BYTE-YYYY
     """
     has_perm, reason = has_second_keyauth_permission(ctx.author)
     if not has_perm:
         await ctx.reply(f"\u274C **Permission Denied:** {reason}")
         return
 
-    if not package or not keys:
-        pkg_options = ", ".join([f"`{p['name']}`" for p in DEFAULT_SECOND_KEYAUTH_APPS])
+    if not args:
         await ctx.reply(
-            f"\u2139\uFE0F **Usage:** `*addsecondkeys <package> <keys...>`\n"
-            f"**Packages:** {pkg_options}\n"
-            f"**Example:** `*addsecondkeys basic KEY1 KEY2 KEY3`"
+            "\u2139\uFE0F **Usage:** `*addsecondkeys [duration_days] <keys...>`\n"
+            "**Example:** `*addsecondkeys 30 BYTE-XXXX BYTE-YYYY` (or `*addsecondkeys 1 <keys>` / `*addsecondkeys 7 <keys>`)"
         )
         return
 
-    pkg = get_second_auth_package_by_query(package)
-    if not pkg:
-        pkg_options = ", ".join([f"`{p['name']}`" for p in DEFAULT_SECOND_KEYAUTH_APPS])
-        await ctx.reply(f"\u274C Unknown package `{package}`. Choose from: {pkg_options}")
-        return
-
     import re
-    tokens = [k.strip() for k in re.split(r"[\r\n,;\s]+", keys) if k.strip()]
+    tokens = [k.strip() for k in re.split(r"[\r\n,;\s]+", args) if k.strip()]
     if not tokens:
         await ctx.reply("\u274C No keys detected in input.")
         return
 
-    target_dur = None
+    # Check if first token is package name like 'basic'
+    if tokens[0].lower() in ("basic", "basic panel", "e52c1515c53453b85d0d4e87"):
+        tokens.pop(0)
+
+    target_dur = 30
     if tokens and tokens[0].isdigit():
         target_dur = int(tokens.pop(0))
 
     if not tokens:
-        await ctx.reply("\u274C No keys detected after duration specification.")
+        await ctx.reply("\u274C No keys detected after duration.")
         return
 
-    added, total_avail, pkg_name = add_second_auth_keys(pkg["package_id"], tokens, duration_days=target_dur)
+    added, total_avail, pkg_name = add_second_auth_keys("e52c1515c53453b85d0d4e87", tokens, duration_days=target_dur)
+    dur_label = f" ({target_dur} Days Pool)" if target_dur else ""
     embed = discord.Embed(
         title="\U0001F4E6 Stock Successfully Restocked (Second Auth)",
         color=0x00FF00,
         timestamp=datetime.utcnow()
     )
-    embed.add_field(name="\U0001F4E6 Package", value=f"`{pkg_name}`", inline=True)
+    embed.add_field(name="\U0001F4E6 Package", value=f"`{pkg_name}`{dur_label}", inline=True)
     embed.add_field(name="\u2795 Keys Added", value=f"`{added}`", inline=True)
     embed.add_field(name="\U0001F4CA Available in Stock", value=f"`{total_avail}` Keys", inline=True)
     embed.set_footer(text=f"Added by: {ctx.author.name}")
@@ -4712,29 +4706,24 @@ async def addsecondkeys_cmd(ctx, package: str = None, *, keys: str = None):
 
 @bot.command(name="secondstock", aliases=["stock2", "sstock", "secondauthstock"])
 async def secondstock_cmd(ctx):
-    """Displays the live stock count for all 5 Second Auth packages."""
+    """Displays the live stock count for BASIC PANEL."""
     embed = build_second_auth_stock_embed()
     await ctx.reply(embed=embed)
 
 
 @bot.command(name="clearsecondstock", aliases=["clearstock2"])
-async def clearsecondstock_cmd(ctx, package: str = None):
-    """Clears the stock for a specific Second Auth package."""
+async def clearsecondstock_cmd(ctx):
+    """Clears the stock for BASIC PANEL."""
     if not has_admin_or_owner_access(ctx.author):
         await ctx.reply("\u274C Only an **Administrator** can clear stock.")
         return
-    if not package:
-        await ctx.reply("Usage: `*clearsecondstock <package>` (e.g. `*clearsecondstock basic`)")
-        return
-    pkg = get_second_auth_package_by_query(package)
-    if not pkg:
-        await ctx.reply(f"\u274C Unknown package `{package}`.")
-        return
     stock = load_second_auth_stock()
-    if pkg["package_id"] in stock.get("packages", {}):
-        stock["packages"][pkg["package_id"]]["keys"] = []
+    basic_pid = "e52c1515c53453b85d0d4e87"
+    if basic_pid in stock.get("packages", {}):
+        stock["packages"][basic_pid]["durations"] = {"1": [], "7": [], "30": []}
+        stock["packages"][basic_pid]["keys"] = []
         save_second_auth_stock(stock)
-    await ctx.reply(f"\U0001F5D1\uFE0F Cleared stock for **{pkg['name']}**.")
+    await ctx.reply("\U0001F5D1\uFE0F Cleared stock for **BASIC PANEL**.")
 
 
 @bot.command(name="setsecondkeyrole", aliases=["secondkeyrole"])
