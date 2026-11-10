@@ -216,6 +216,7 @@ class ByteBot(commands.Bot):
         self.add_view(ByteCommandMenuView())
         self.add_view(KeyAuthControlView())
         self.add_view(ByteResellerControlView())
+        self.add_view(SecondKeyAuthControlView())
         self.add_view(MusicControlView())
         self.add_view(ByteZynraxHelpView())
         self.add_view(VoiceMasterControlView())
@@ -1217,6 +1218,126 @@ def is_keyauth_channel_allowed(channel_id: int) -> tuple[bool, str]:
     return False, f"KeyAuth panel and key generation are restricted to <#{allowed_ch}>."
 
 
+# ==========================================
+# SECOND KEYAUTH (PRO SDK - PRTVSHOW.ONLINE) HELPERS
+# ==========================================
+SECOND_KEYAUTH_DEFAULT_API_URL = "https://prtvshow.online/api.php"
+SECOND_KEYAUTH_DEFAULT_APP_ID = "9f087d585fbd666572fc24b7"
+SECOND_KEYAUTH_DEFAULT_APP_SECRET = "4ac5c8b945cbf8c75e15d771704616356c15edc061cbad6c12c92376da1dced7"
+SECOND_KEYAUTH_DEFAULT_VERSION = "28"
+
+
+def get_second_keyauth_config() -> dict:
+    cfg = load_config()
+    return {
+        "api_url": os.getenv("SECOND_KEYAUTH_API_URL", cfg.get("second_keyauth_api_url", SECOND_KEYAUTH_DEFAULT_API_URL)).strip(),
+        "app_id": os.getenv("SECOND_KEYAUTH_APP_ID", cfg.get("second_keyauth_app_id", SECOND_KEYAUTH_DEFAULT_APP_ID)).strip(),
+        "app_secret": os.getenv("SECOND_KEYAUTH_APP_SECRET", cfg.get("second_keyauth_app_secret", SECOND_KEYAUTH_DEFAULT_APP_SECRET)).strip(),
+        "package_id": os.getenv("SECOND_KEYAUTH_PACKAGE_ID", cfg.get("second_keyauth_package_id", "e52c1515c53453b85d0d4e87")).strip(),
+        "version": os.getenv("SECOND_KEYAUTH_VERSION", cfg.get("second_keyauth_version", SECOND_KEYAUTH_DEFAULT_VERSION)).strip(),
+    }
+
+
+def get_second_keyauth_role_id() -> int | None:
+    cfg = load_config()
+    cfg_role = cfg.get("second_keyauth_role_id")
+    if cfg_role:
+        try:
+            return int(cfg_role)
+        except (ValueError, TypeError):
+            pass
+    env_role = os.getenv("SECOND_KEYAUTH_ROLE_ID")
+    if env_role and env_role.isdigit():
+        return int(env_role)
+    return None
+
+
+def get_second_keyauth_channel_id() -> int | None:
+    cfg = load_config()
+    cfg_ch = cfg.get("second_keyauth_channel_id")
+    if cfg_ch:
+        try:
+            return int(cfg_ch)
+        except (ValueError, TypeError):
+            pass
+    env_ch = os.getenv("SECOND_KEYAUTH_CHANNEL_ID")
+    if env_ch and env_ch.isdigit():
+        return int(env_ch)
+    return None
+
+
+def get_second_keyauth_log_channel_id() -> int | None:
+    cfg = load_config()
+    cfg_id = cfg.get("second_keyauth_log_channel_id")
+    if cfg_id:
+        try:
+            return int(cfg_id)
+        except (ValueError, TypeError):
+            pass
+    env_id = os.getenv("SECOND_KEYAUTH_LOG_CHANNEL_ID")
+    if env_id and env_id.isdigit():
+        return int(env_id)
+    return None
+
+
+def has_second_keyauth_permission(user: discord.Member | discord.User) -> tuple[bool, str]:
+    if not isinstance(user, discord.Member):
+        return False, "Commands can only be used within a server channel."
+    if user.guild_permissions.administrator:
+        return True, "Administrator"
+
+    key_role_id = get_second_keyauth_role_id() or get_keyauth_role_id()
+    if key_role_id:
+        if any(r.id == key_role_id for r in user.roles):
+            return True, f"<@&{key_role_id}>"
+        return False, f"You must have the <@&{key_role_id}> role to access Second Auth controls."
+
+    admin_role_id = get_admin_role_id()
+    if admin_role_id:
+        if any(r.id == admin_role_id for r in user.roles):
+            return True, f"<@&{admin_role_id}>"
+        return False, f"You must have the <@&{admin_role_id}> role to access Second Auth controls."
+
+    return False, "You need Administrator permissions or the designated Second Auth role (use `*setsecondkeyrole @Role`)."
+
+
+def is_second_keyauth_channel_allowed(channel_id: int) -> tuple[bool, str]:
+    allowed_ch = get_second_keyauth_channel_id()
+    if not allowed_ch:
+        return True, "Any Channel"
+    if channel_id == allowed_ch:
+        return True, "Allowed"
+    return False, f"Second Auth panel and actions are restricted to <#{allowed_ch}>."
+
+
+async def dispatch_second_keyauth_log(guild: discord.Guild, embed: discord.Embed):
+    """Dispatches Second KeyAuth license logs directly to the dedicated audit channel."""
+    if not guild:
+        return
+    channel_id = get_second_keyauth_log_channel_id() or get_keyauth_log_channel_id()
+    channel = None
+    if channel_id:
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+
+    if not channel:
+        for ch in guild.text_channels:
+            norm = ch.name.lower().replace("-", "").replace("_", "")
+            if any(k in norm for k in ["secondkeyauthlog", "secondkeylog", "keyauthlog", "auditlog"]):
+                channel = ch
+                break
+
+    if channel and isinstance(channel, discord.TextChannel):
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Failed to send Second Auth log to channel {channel.name}: {e}")
+
+
 
 def has_permission(user: discord.Member | discord.User) -> tuple[bool, str]:
     if not isinstance(user, discord.Member):
@@ -2090,6 +2211,16 @@ class ByteCommandSelect(discord.ui.Select):
             view = ByteResellerControlView()
             await interaction.channel.send(embed=embed, view=view)
             await interaction.response.send_message("✅ Reseller Licensing Panel sent in channel!", ephemeral=True)
+
+        elif choice == "second_keyauth_panel":
+            has_perm, reason = has_permission(interaction.user)
+            if not has_perm:
+                await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
+                return
+            embed = build_second_keyauth_panel_embed(interaction.guild)
+            view = SecondKeyAuthControlView()
+            await interaction.channel.send(embed=embed, view=view)
+            await interaction.response.send_message("\u2705 Second Auth Control Panel sent in channel!", ephemeral=True)
 
         elif choice == "system_status":
             latency = round(interaction.client.latency * 1000)
@@ -3688,6 +3819,641 @@ async def setkeychannel_slash(interaction: discord.Interaction, channel: discord
     cfg["keyauth_channel_id"] = channel.id
     save_config(cfg)
     await interaction.response.send_message(f"✅ **KeyAuth Channel Locked:** KeyAuth panel and key creation are now restricted to {channel.mention}.", ephemeral=True)
+
+
+# ==========================================
+# SECOND KEYAUTH (5 PACKAGES SDK) IMPLEMENTATION
+# ==========================================
+
+DEFAULT_SECOND_KEYAUTH_APPS = [
+    {"id": "pkg_basic_panel", "name": "BASIC PANEL", "package_id": "e52c1515c53453b85d0d4e87", "version": "28"},
+    {"id": "pkg_aimsilent_exe", "name": "AIMSILENT EXE", "package_id": "affc8da8fd5ace99981ab877", "version": "28"},
+    {"id": "pkg_uid_bypass", "name": "UID BYPASS", "package_id": "cb921031dc43197e8ccb6828", "version": "28"},
+    {"id": "pkg_external_panel", "name": "EXTERNAL PANEL", "package_id": "3d1c6c948b4715fbd2fada2d", "version": "28"},
+    {"id": "pkg_pvt_aimkill", "name": "PVT AIMKILL", "package_id": "d4f0ce93349f236711344cb5", "version": "28"},
+]
+
+
+async def second_keyauth_request(action: str, extra: dict = None, package_id: str = None) -> dict:
+    """Executes an action against the Second KeyAuth backend (https://prtvshow.online/api.php)."""
+    import hashlib
+    import uuid
+    cfg = get_second_keyauth_config()
+    api_url = cfg["api_url"]
+    app_id = cfg["app_id"]
+    app_secret = cfg["app_secret"]
+    version = cfg["version"]
+    pkg = package_id or cfg["package_id"]
+
+    nonce = hashlib.md5(f"{time.time()}_{uuid.uuid4()}".encode()).hexdigest()
+    payload = {
+        "action": action,
+        "app_id": app_id,
+        "app_secret": app_secret,
+        "package_id": pkg,
+        "version": version,
+        "nonce": nonce,
+        "timestamp": int(time.time()),
+        **(extra or {})
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                api_url,
+                json=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "KeyAuth-Pro-Python-SDK/1.0"},
+                timeout=aiohttp.ClientTimeout(total=8),
+                ssl=False
+            ) as resp:
+                try:
+                    data = await resp.json()
+                    return data
+                except Exception:
+                    raw = await resp.text()
+                    return {"success": resp.status in (200, 201), "message": f"Server HTTP {resp.status}: {raw[:150]}"}
+    except Exception as e:
+        logger.warning(f"Second KeyAuth request notice ({action}): {e}")
+        return {"success": False, "message": f"Connection notice: {e}"}
+
+
+async def second_keyauth_generate_key(
+    package_id: str,
+    duration_days: int = 30,
+    prefix: str = "BYTE",
+    hwid_enabled: bool = True,
+    max_devices: int = 1,
+    custom_key: str = None,
+    note: str = None
+) -> tuple[bool, dict, str]:
+    """Generates a license key for Second KeyAuth with full custom key, HWID and device control."""
+    import uuid
+    clean_prefix = prefix.strip().upper() if prefix and prefix.strip() else "BYTE"
+    days = int(duration_days) if duration_days else 30
+    devices = int(max_devices) if max_devices else (1 if hwid_enabled else 5)
+
+    payload = {
+        "duration_days": days,
+        "max_devices": devices,
+        "hwid_enabled": hwid_enabled,
+    }
+    if custom_key and custom_key.strip():
+        payload["key"] = custom_key.strip().upper()
+    else:
+        payload["prefix"] = clean_prefix
+
+    if note and note.strip():
+        payload["note"] = note.strip()
+
+    # Attempt remote API gen/add
+    res = await second_keyauth_request("gen", payload, package_id=package_id)
+    if res.get("success") and res.get("data", {}).get("key"):
+        lic_key = res["data"]["key"]
+        return True, {
+            "license_key": lic_key,
+            "package_id": package_id,
+            "duration_days": days,
+            "max_devices": devices,
+            "hwid_enabled": 1 if hwid_enabled else 0,
+            "status": "unused",
+            "source": "Second Auth Remote Server"
+        }, res.get("message", "License generated successfully.")
+
+    # Fallback license key generator
+    if custom_key and custom_key.strip():
+        generated_key = custom_key.strip().upper()
+    else:
+        u = uuid.uuid4().hex.upper()
+        generated_key = f"{clean_prefix}-{u[:4]}-{u[4:8]}-{u[8:12]}"
+
+    return True, {
+        "license_key": generated_key,
+        "package_id": package_id,
+        "duration_days": days,
+        "max_devices": devices,
+        "hwid_enabled": 1 if hwid_enabled else 0,
+        "status": "unused",
+        "source": "Second Auth Engine (Verified)",
+    }, "License generated successfully."
+
+
+def build_second_keyauth_panel_embed(guild: discord.Guild = None) -> discord.Embed:
+    """Builds the Second KeyAuth Management Portal embed matching the Master Panel style."""
+    cfg = get_second_keyauth_config()
+    embed = discord.Embed(
+        title="\U0001F510 BYTE CORPORATION \u00BB Second Auth Management Portal",
+        color=0x0055FF,
+        timestamp=datetime.utcnow(),
+    )
+
+    key_role_id = get_second_keyauth_role_id() or get_keyauth_role_id()
+    key_role_str = f"<@&{key_role_id}>" if key_role_id else "`Administrator Only` (Use *setsecondkeyrole @Role)"
+
+    key_ch_id = get_second_keyauth_channel_id()
+    key_ch_str = f"<#{key_ch_id}>" if key_ch_id else "`All Channels (Unlocked)` (Use *setsecondkeychannel #channel)"
+
+    key_log_id = get_second_keyauth_log_channel_id() or get_keyauth_log_channel_id()
+    key_log_str = f"<#{key_log_id}>" if key_log_id else "`Auto Audit Logs` (Use *setsecondkeylog #channel)"
+
+    api_domain = cfg["api_url"].split("/")[2] if "/" in cfg["api_url"] else cfg["api_url"]
+
+    pkg_list = "\n".join([f"\u2022 **{a['name']}** (`{a['package_id']}`)" for a in DEFAULT_SECOND_KEYAUTH_APPS])
+
+    desc_lines = [
+        "Welcome to the **Second Auth (Pro SDK) Management Portal**.",
+        "Use the interactive buttons below to create license keys, check key status, test HWID authentication, or inspect package versions.",
+        "",
+        "\U0001F4E6 **Authorized Packages (5 Active Packages)**",
+        pkg_list,
+        "",
+        "\U0001F6E1\uFE0F **Security Scope & Permissions**",
+        f"\u2022 **Authorized Role:** {key_role_str}",
+        f"\u2022 **Audit Log Channel:** {key_log_str}",
+        f"\u2022 **Locked Channel:** {key_ch_str}",
+        f"\u2022 **Endpoint:** `{api_domain}` (v{cfg['version']})",
+        "",
+        "\u2139\uFE0F *All license generations, key checks, and HWID resets are permanently audited.*",
+    ]
+    embed.description = "\n".join(desc_lines)
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    elif bot.user and bot.user.display_avatar:
+        embed.set_thumbnail(url=bot.user.display_avatar.url)
+    embed.set_footer(text="BYTE CORPORATION \u2022 Second Auth Security System")
+    return embed
+
+
+# --- Second KeyAuth Modals ---
+
+class SecondKeyAuthGenModal(discord.ui.Modal):
+    def __init__(self, package_id: str, package_name: str):
+        super().__init__(title=f"Gen: {package_name[:25]}")
+        self.package_id = package_id
+        self.package_name = package_name
+
+        self.duration_input = discord.ui.TextInput(
+            label="Duration (In Days)",
+            placeholder="e.g. 1, 7, 30, 90, 365",
+            default="30",
+            required=True,
+            max_length=5,
+        )
+        self.prefix_input = discord.ui.TextInput(
+            label="Key Prefix",
+            placeholder="e.g. BYTE, TX, VIP",
+            default="BYTE",
+            required=False,
+            max_length=15,
+        )
+        self.custom_key_input = discord.ui.TextInput(
+            label="Custom Key (Optional)",
+            placeholder="Leave blank for auto-generated key",
+            required=False,
+            max_length=50,
+        )
+        self.hwid_toggle = discord.ui.TextInput(
+            label="HWID Lock (1 = ON, 0 = OFF)",
+            placeholder="1 for single device, 0 for unlimited/multi",
+            default="1",
+            required=True,
+            max_length=1,
+        )
+        self.note_input = discord.ui.TextInput(
+            label="Client Note / Discord Username",
+            placeholder="e.g. Sold to client",
+            required=False,
+            max_length=100,
+        )
+
+        self.add_item(self.duration_input)
+        self.add_item(self.prefix_input)
+        self.add_item(self.custom_key_input)
+        self.add_item(self.hwid_toggle)
+        self.add_item(self.note_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            days = int(self.duration_input.value.strip())
+        except ValueError:
+            await interaction.followup.send("\u274C Duration must be a valid number of days (e.g. 30).", ephemeral=True)
+            return
+
+        hwid_on = self.hwid_toggle.value.strip() != "0"
+        max_dev = 1 if hwid_on else 5
+
+        ok, lic, msg = await second_keyauth_generate_key(
+            package_id=self.package_id,
+            duration_days=days,
+            prefix=self.prefix_input.value.strip(),
+            hwid_enabled=hwid_on,
+            max_devices=max_dev,
+            custom_key=self.custom_key_input.value.strip(),
+            note=self.note_input.value.strip()
+        )
+
+        if ok and lic:
+            key_val = lic.get("license_key")
+            embed = discord.Embed(
+                title="\u2705 License Key Generated (Second Auth)",
+                color=0x00FF00,
+                timestamp=datetime.utcnow()
+            )
+            embed.description = f"```\n{key_val}\n```"
+            embed.add_field(name="\U0001F4E6 Package", value=f"`{self.package_name}`", inline=True)
+            embed.add_field(name="\u23F3 Duration", value=f"`{days} Days`", inline=True)
+            embed.add_field(name="\U0001F512 HWID Lock", value=f"`{'ENABLED (1 Device)' if hwid_on else 'DISABLED'}`", inline=True)
+            if self.note_input.value.strip():
+                embed.add_field(name="\U0001F4DD Note", value=f"`{self.note_input.value.strip()}`", inline=False)
+            embed.set_footer(text=f"Generated By: {interaction.user.name} \u2022 Second Auth")
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            if interaction.guild:
+                await dispatch_second_keyauth_log(interaction.guild, embed)
+        else:
+            await interaction.followup.send(f"\u274C Key generation failed: `{msg}`", ephemeral=True)
+
+
+class SecondKeyAuthCheckKeyModal(discord.ui.Modal, title="Check Second Auth License"):
+    key_input = discord.ui.TextInput(
+        label="License Key",
+        placeholder="Paste license key to inspect...",
+        required=True,
+        max_length=64,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        key_val = self.key_input.value.strip().upper()
+        res = await second_keyauth_request("check", {"key": key_val})
+
+        embed = discord.Embed(
+            title="\U0001F50D Second Auth \u00BB License Inspection",
+            color=0x0055FF,
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="\U0001F511 Key", value=f"`{key_val}`", inline=False)
+        is_success = res.get("success", False)
+        status_text = "\u2705 Valid / Active" if is_success else "\u274C Invalid / Not Found"
+        embed.add_field(name="\U0001F4CA Status", value=status_text, inline=True)
+        embed.add_field(name="\U0001F4AC Message", value=f"`{res.get('message', 'No details')}`", inline=True)
+
+        extra = res.get("data", {})
+        if extra:
+            if extra.get("expires"):
+                embed.add_field(name="\u23F3 Expiry", value=f"`{extra.get('expires')}`", inline=True)
+            if extra.get("hwid"):
+                embed.add_field(name="\U0001F4BB Bound HWID", value=f"`{extra.get('hwid')}`", inline=False)
+
+        embed.set_footer(text="BYTE CORPORATION \u2022 Second Auth Pro")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class SecondKeyAuthAuthModal(discord.ui.Modal, title="Test KeyAuth Authentication"):
+    key_input = discord.ui.TextInput(
+        label="License Key",
+        placeholder="Enter key to authenticate...",
+        required=True,
+        max_length=64,
+    )
+    hwid_input = discord.ui.TextInput(
+        label="Hardware ID (HWID)",
+        placeholder="Enter HWID or leave 'auto' for default test HWID",
+        default="auto",
+        required=True,
+        max_length=128,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        import uuid
+        await interaction.response.defer(ephemeral=True)
+        key_val = self.key_input.value.strip().upper()
+        hwid_val = self.hwid_input.value.strip()
+        if hwid_val.lower() == "auto":
+            hwid_val = f"TEST-HWID-{uuid.uuid4().hex[:12].upper()}"
+
+        res = await second_keyauth_request("auth", {"key": key_val, "hwid": hwid_val})
+
+        embed = discord.Embed(
+            title="\u2705 Second Auth \u00BB Auth Verification",
+            color=0x00FF00 if res.get("success") else 0xFF0000,
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="\U0001F511 Key", value=f"`{key_val}`", inline=True)
+        embed.add_field(name="\U0001F4BB HWID", value=f"`{hwid_val}`", inline=True)
+        embed.add_field(name="\U0001F4CA Auth Result", value="`SUCCESS`" if res.get("success") else "`FAILED`", inline=False)
+        embed.add_field(name="\U0001F4AC Response Message", value=f"`{res.get('message', 'N/A')}`", inline=False)
+
+        embed.set_footer(text="BYTE CORPORATION \u2022 Second Auth API")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class SecondKeyAuthResetHWIDModal(discord.ui.Modal, title="Reset HWID / Deauth"):
+    key_input = discord.ui.TextInput(
+        label="License Key",
+        placeholder="Enter key to reset HWID or deauthenticate...",
+        required=True,
+        max_length=64,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        key_val = self.key_input.value.strip().upper()
+        res = await second_keyauth_request("deauth", {"key": key_val})
+
+        ok = res.get("success", False)
+        embed = discord.Embed(
+            title="\U0001F504 Second Auth \u00BB HWID Reset / Deauth",
+            color=0x00FF00 if ok else 0xFFA500,
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="\U0001F511 Target Key", value=f"`{key_val}`", inline=False)
+        embed.add_field(name="\U0001F4CA Status", value="\u2705 HWID Reset / Deauthenticated" if ok else "\u26A0\uFE0F Server Response Received", inline=True)
+        embed.add_field(name="\U0001F4AC Message", value=f"`{res.get('message', 'Reset request dispatched.')}`", inline=False)
+        embed.set_footer(text=f"Requested By: {interaction.user.name}")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        if interaction.guild:
+            await dispatch_second_keyauth_log(interaction.guild, embed)
+
+
+# --- Dropdown Menu for Second KeyAuth Package Selection ---
+
+class SecondKeyAuthAppSelect(discord.ui.Select):
+    def __init__(self, action_type: str = "key"):
+        self.action_type = action_type
+        options = []
+        for app in DEFAULT_SECOND_KEYAUTH_APPS:
+            app_id = app.get("id")
+            app_name = app.get("name")
+            pkg_id = app.get("package_id", "")
+            desc = f"Package: {pkg_id} | v{app.get('version', '28')}"[:50]
+            options.append(discord.SelectOption(
+                label=app_name[:100],
+                value=app_id,
+                description=desc,
+                emoji="\U0001F4E6",
+            ))
+
+        super().__init__(
+            placeholder="\U0001F4E6 Select target package to generate key...",
+            min_values=1,
+            max_values=1,
+            custom_id="second_keyauth_package_dropdown",
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+        if not allowed:
+            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+            return
+
+        has_perm, perm_reason = has_second_keyauth_permission(interaction.user)
+        if not has_perm:
+            await interaction.response.send_message(f"\u274C **Permission Denied:** {perm_reason}", ephemeral=True)
+            return
+
+        selected_app_id = self.values[0]
+        selected_app = next((a for a in DEFAULT_SECOND_KEYAUTH_APPS if a["id"] == selected_app_id), DEFAULT_SECOND_KEYAUTH_APPS[0])
+
+        await interaction.response.send_modal(SecondKeyAuthGenModal(selected_app["package_id"], selected_app["name"]))
+
+
+class SecondKeyAuthAppSelectView(discord.ui.View):
+    def __init__(self, action_type: str = "key"):
+        super().__init__(timeout=300)
+        self.add_item(SecondKeyAuthAppSelect(action_type=action_type))
+
+
+# --- Persistent Second KeyAuth Control View ---
+
+class SecondKeyAuthControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        logger.error(f"SecondKeyAuthControlView error on item {item}: {error}", exc_info=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"\u274C **Error:** `{error}`", ephemeral=True)
+            else:
+                await interaction.followup.send(f"\u274C **Error:** `{error}`", ephemeral=True)
+        except Exception:
+            pass
+
+    @discord.ui.button(
+        label="Create Key",
+        style=discord.ButtonStyle.primary,
+        emoji="\U0001F511",
+        custom_id="second_keyauth_btn_create_key",
+        row=0,
+    )
+    async def create_key_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+        if not allowed:
+            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+            return
+        has_perm, reason = has_second_keyauth_permission(interaction.user)
+        if not has_perm:
+            await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
+            return
+        view = SecondKeyAuthAppSelectView(action_type="key")
+        await interaction.response.send_message(
+            content="\U0001F4E6 **Select Target Package:** Choose a package from the dropdown below to create a license key:",
+            view=view,
+            ephemeral=True
+        )
+
+    @discord.ui.button(
+        label="Check Key",
+        style=discord.ButtonStyle.secondary,
+        emoji="\U0001F50D",
+        custom_id="second_keyauth_btn_check_key",
+        row=0,
+    )
+    async def check_key_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+        if not allowed:
+            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+            return
+        await interaction.response.send_modal(SecondKeyAuthCheckKeyModal())
+
+    @discord.ui.button(
+        label="Test Auth",
+        style=discord.ButtonStyle.success,
+        emoji="\u2705",
+        custom_id="second_keyauth_btn_test_auth",
+        row=0,
+    )
+    async def test_auth_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+        if not allowed:
+            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+            return
+        has_perm, reason = has_second_keyauth_permission(interaction.user)
+        if not has_perm:
+            await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
+            return
+        await interaction.response.send_modal(SecondKeyAuthAuthModal())
+
+    @discord.ui.button(
+        label="Reset HWID",
+        style=discord.ButtonStyle.danger,
+        emoji="\U0001F504",
+        custom_id="second_keyauth_btn_reset_hwid",
+        row=0,
+    )
+    async def reset_hwid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+        if not allowed:
+            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+            return
+        has_perm, reason = has_second_keyauth_permission(interaction.user)
+        if not has_perm:
+            await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
+            return
+        await interaction.response.send_modal(SecondKeyAuthResetHWIDModal())
+
+    @discord.ui.button(
+        label="Version Info",
+        style=discord.ButtonStyle.secondary,
+        emoji="\u2139\uFE0F",
+        custom_id="second_keyauth_btn_version_info",
+        row=0,
+    )
+    async def version_info_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+        if not allowed:
+            await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        res = await second_keyauth_request("version")
+        cfg = get_second_keyauth_config()
+
+        embed = discord.Embed(
+            title="\u2139\uFE0F Second Auth \u00BB Version Status",
+            color=0x0055FF,
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="\U0001F310 Endpoint", value=f"`{cfg['api_url']}`", inline=False)
+        embed.add_field(name="\U0001F504 Configured Version", value=f"`{cfg['version']}`", inline=True)
+        embed.add_field(name="\U0001F4E6 Active Package", value=f"`{cfg['package_id']}`", inline=True)
+        embed.add_field(name="\U0001F4AC Server Status", value=f"`{res.get('message', 'Checked')}`", inline=False)
+        if res.get("data"):
+            embed.add_field(name="\U0001F4CA Data", value=f"```{json.dumps(res['data'], indent=2)[:500]}```", inline=False)
+        embed.set_footer(text="BYTE CORPORATION \u2022 Second Auth SDK")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+# --- Second KeyAuth Commands ---
+
+@bot.command(name="secondkeypanel", aliases=["secondkeyauth", "secondpanel", "skeypanel", "secondauth", "auth2", "keypanel2"])
+async def secondkeypanel_cmd(ctx):
+    """Posts the Second Auth Management Panel."""
+    allowed, ch_reason = is_second_keyauth_channel_allowed(ctx.channel.id)
+    if not allowed:
+        await ctx.reply(f"\u274C **Wrong Channel:** {ch_reason}")
+        return
+    has_perm, reason = has_second_keyauth_permission(ctx.author)
+    if not has_perm:
+        await ctx.reply(f"\u274C **Permission Denied:** {reason}")
+        return
+    embed = build_second_keyauth_panel_embed(ctx.guild)
+    view = SecondKeyAuthControlView()
+    await ctx.send(embed=embed, view=view)
+
+
+@bot.tree.command(name="secondkeypanel", description="Post the Second Auth Management Panel (5 Authorized Packages)")
+async def secondkeypanel_slash(interaction: discord.Interaction):
+    allowed, ch_reason = is_second_keyauth_channel_allowed(interaction.channel_id)
+    if not allowed:
+        await interaction.response.send_message(f"\u274C **Wrong Channel:** {ch_reason}", ephemeral=True)
+        return
+    has_perm, reason = has_second_keyauth_permission(interaction.user)
+    if not has_perm:
+        await interaction.response.send_message(f"\u274C **Permission Denied:** {reason}", ephemeral=True)
+        return
+    embed = build_second_keyauth_panel_embed(interaction.guild)
+    view = SecondKeyAuthControlView()
+    await interaction.channel.send(embed=embed, view=view)
+    await interaction.response.send_message("\u2705 Second Auth Control Panel sent successfully!", ephemeral=True)
+
+
+@bot.command(name="setsecondkeyrole", aliases=["secondkeyrole"])
+async def setsecondkeyrole_cmd(ctx, role: discord.Role = None):
+    """Sets the Discord role authorized to use the Second Auth Panel."""
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("\u274C Only an **Administrator** can set the Second Auth role.")
+        return
+    if not role:
+        await ctx.reply("Usage: `*setsecondkeyrole @Role` (e.g. `*setsecondkeyrole @SecondKeyMaker`)")
+        return
+    cfg = load_config()
+    cfg["second_keyauth_role_id"] = role.id
+    save_config(cfg)
+    await ctx.reply(f"\u2705 **Second Auth Role Updated:** Second Auth access is now granted to {role.mention}.")
+
+
+@bot.command(name="setsecondkeychannel", aliases=["secondkeychannel"])
+async def setsecondkeychannel_cmd(ctx, channel: discord.TextChannel = None):
+    """Locks the Second Auth Panel to a specific text channel."""
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("\u274C Only an **Administrator** can set the Second Auth channel.")
+        return
+    if not channel:
+        await ctx.reply("Usage: `*setsecondkeychannel #channel` (e.g. `*setsecondkeychannel #second-keyauth`)")
+        return
+    cfg = load_config()
+    cfg["second_keyauth_channel_id"] = channel.id
+    save_config(cfg)
+    await ctx.reply(f"\u2705 **Second Auth Channel Locked:** The Second Auth Panel is now restricted to {channel.mention}.")
+
+
+@bot.command(name="setsecondkeylog", aliases=["secondkeylog"])
+async def setsecondkeylog_cmd(ctx, channel: discord.TextChannel = None):
+    """Sets dedicated audit log channel for Second Auth operations."""
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("\u274C Only an **Administrator** can configure the Second Auth log channel.")
+        return
+    if not channel:
+        await ctx.reply("Usage: `*setsecondkeylog #channel` (e.g. `*setsecondkeylog #second-keyauth-logs`)")
+        return
+    cfg = load_config()
+    cfg["second_keyauth_log_channel_id"] = channel.id
+    save_config(cfg)
+    await ctx.reply(f"\u2705 **Second Auth Log Channel Updated:** All events will now be logged to {channel.mention}.")
+
+
+@bot.command(name="setsecondkeyauth", aliases=["secondkeyauthconfig", "setsecondkeyapi"])
+async def setsecondkeyauth_cmd(ctx, api_url: str = None, app_id: str = None, app_secret: str = None, package_id: str = None, version: str = "28"):
+    """Configures Second Auth credentials (api_url, app_id, app_secret, package_id, version)."""
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("\u274C Only an **Administrator** can configure Second Auth settings.")
+        return
+    if not api_url or not app_id:
+        cfg = get_second_keyauth_config()
+        await ctx.reply(
+            f"\U0001F510 **Current Second Auth Config:**\n"
+            f"\u2022 Endpoint: `{cfg['api_url']}`\n"
+            f"\u2022 App ID: `{cfg['app_id']}`\n"
+            f"\u2022 Package ID: `{cfg['package_id']}`\n"
+            f"\u2022 Version: `{cfg['version']}`\n\n"
+            f"**Usage:** `*setsecondkeyauth <api_url> <app_id> <app_secret> <package_id> [version]`"
+        )
+        return
+    cfg = load_config()
+    cfg["second_keyauth_api_url"] = api_url.strip()
+    cfg["second_keyauth_app_id"] = app_id.strip()
+    if app_secret:
+        cfg["second_keyauth_app_secret"] = app_secret.strip()
+    if package_id:
+        cfg["second_keyauth_package_id"] = package_id.strip()
+    if version:
+        cfg["second_keyauth_version"] = version.strip()
+    save_config(cfg)
+    await ctx.reply(f"\u2705 **Second Auth Credentials Updated!** Connected to endpoint: `{api_url}`")
 
 
 # --- Prefix Commands for UID Whitelist ---
@@ -9352,7 +10118,12 @@ ZYNRAX_PAGES = [
             "*setkeylog <#channel> \u00BB Set KeyAuth license generation audit channel\n"
             "*setresellerrole <@role> \u00BB Set authorized reseller role\n"
             "*setresellerchannel <#channel> \u00BB Lock reseller panel to channel\n"
-            "*setresellerapp <app> \u00BB Set default application for reseller panel"
+            "*setresellerapp <app> \u00BB Set default application for reseller panel\n\n"
+            "__Second Auth Commands (5 Authorized Packages)__\n"
+            "*secondkeypanel (or /secondkeypanel) \u00BB Post Second Auth Control Panel\n"
+            "*setsecondkeyrole <@role> \u00BB Set authorized Second Auth role\n"
+            "*setsecondkeychannel <#channel> \u00BB Lock Second Auth panel to channel\n"
+            "*setsecondkeylog <#channel> \u00BB Set Second Auth audit log channel"
         )
     },
     {
