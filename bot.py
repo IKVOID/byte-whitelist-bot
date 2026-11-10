@@ -224,6 +224,7 @@ class ByteBot(commands.Bot):
         self.add_view(ByteCustomTicketControlView())
         self.add_view(ByteWelcomeEditorView())
         self.add_view(ServerVerificationView())
+        self.add_view(ByteAutoroleView())
         
         # Connect to verified ultra-fast 2026 Lavalink v4.2.2 nodes (TriniumHost + Nazha + Jirayu)
         await connect_lavalink_pool(self)
@@ -9221,9 +9222,9 @@ VERIFICATION_CONFIG_FILE = os.path.join(BASE_DIR, "verification_config.json")
 def load_verification_config() -> dict:
     default_cfg = {
         "enabled": True,
-        "role_id": None,
-        "channel_id": None,
-        "logs_channel_id": None,
+        "role_id": 1566796494504333353,
+        "channel_id": 1566789314140971018,
+        "logs_channel_id": 1508088964077191261,
         "embed": {
             "title": "✅ Server Verification System",
             "description": "Welcome to **{server}**!\n\nTo access all server channels, community chats, downloads, and resources, please verify yourself by clicking the **Verify Member** button below.\n\n🔒 **Security:** Verification protects the community against automated spam and unauthorized bots.",
@@ -9292,7 +9293,10 @@ class ServerVerificationView(discord.ui.View):
             await interaction.followup.send("⚠️ Verification role has not been set by server administrators yet. Please ask staff to run `*setverifyrole @Role`.", ephemeral=True)
             return
 
-        role = guild.get_role(role_id)
+        try:
+            role = guild.get_role(int(role_id))
+        except (ValueError, TypeError):
+            role = None
         if not role:
             await interaction.followup.send(f"⚠️ Configured verification role (`{role_id}`) was not found on this server. Please contact an Administrator.", ephemeral=True)
             return
@@ -9314,7 +9318,10 @@ class ServerVerificationView(discord.ui.View):
             # Audit Log if configured
             logs_id = cfg.get("logs_channel_id")
             if logs_id:
-                log_ch = guild.get_channel(logs_id)
+                try:
+                    log_ch = guild.get_channel(int(logs_id))
+                except (ValueError, TypeError):
+                    log_ch = None
                 if log_ch:
                     embed = discord.Embed(
                         title="✅ Member Verified",
@@ -9423,50 +9430,129 @@ async def setverifyrole_slash(interaction: discord.Interaction, role: discord.Ro
     await interaction.response.send_message(f"✅ **Verified Member Role updated to:** {role.mention}\n*Members clicking Verify Member will automatically receive this role.*", ephemeral=True)
 
 
-@bot.command(name="autoverifysetup", aliases=["quickverifysetup"])
-async def autoverifysetup_cmd(ctx, role: discord.Role = None):
+@bot.command(name="autoverifysetup", aliases=["quickverifysetup", "setupverify", "setupverification", "lockdownverification"])
+async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: discord.TextChannel = None):
     """
-    Automates verification channel permissions:
-    1. Locks current channel so @everyone sees ONLY this channel.
-    2. Hides this channel from the verified role once verified.
+    1-Click Complete Automated Verification Setup:
+    1. Sets Verified Role & Verification Channel.
+    2. Completely locks ALL server categories & channels so unverified users CANNOT see them.
+    3. Leaves ONLY the verification channel visible to @everyone.
+    4. Automatically hides the verification channel once verified.
+    5. Grants the verified role to all existing members so nobody gets locked out!
     """
     if not has_admin_or_owner_access(ctx.author):
-        await ctx.reply("❌ Only an **Administrator** can run auto-verification setup.")
-        return
-    if not role:
-        await ctx.reply("Usage: `*autoverifysetup @VerifiedRole` (Run this inside your #verify channel)")
+        await ctx.reply("❌ Only an **Administrator** or **Server Owner** can run automated verification setup.")
         return
 
     cfg = load_verification_config()
+
+    # Determine Role
+    if not role:
+        role_id = cfg.get("role_id")
+        if role_id:
+            role = ctx.guild.get_role(role_id)
+        if not role:
+            for r in ctx.guild.roles:
+                if r.name.lower() in ["verify", "verified", "member", ".member"]:
+                    role = r
+                    break
+    if not role:
+        await ctx.reply("❌ **Role Not Found:** Please specify the verified role, e.g.: `*autoverifysetup @verify`")
+        return
+
+    # Determine Verification Channel
+    if not target_channel:
+        ch_id = cfg.get("channel_id")
+        if ch_id:
+            target_channel = ctx.guild.get_channel(ch_id)
+        if not target_channel:
+            if "veri" in ctx.channel.name.lower():
+                target_channel = ctx.channel
+            else:
+                for c in ctx.guild.text_channels:
+                    if "veri" in c.name.lower():
+                        target_channel = c
+                        break
+    if not target_channel:
+        target_channel = ctx.channel
+
+    status_msg = await ctx.reply(f"⏳ **Configuring Automated Server Verification Gateway...**\n• Role: {role.mention}\n• Channel: {target_channel.mention}\n*Please wait...*")
+
+    cfg["enabled"] = True
     cfg["role_id"] = role.id
-    cfg["channel_id"] = ctx.channel.id
+    cfg["channel_id"] = target_channel.id
     save_verification_config(cfg)
 
+    staff_only_cat_names = ["logs", "zynrax logs", "keyauth", "keyauth and uid wl", "admin", "mod", "moderator"]
+
+    categories_locked = 0
     try:
-        await ctx.channel.set_permissions(ctx.guild.default_role, view_channel=True, send_messages=False, read_message_history=True)
-        await ctx.channel.set_permissions(role, view_channel=False)
-        await ctx.channel.set_permissions(ctx.guild.me, view_channel=True, send_messages=True, manage_channels=True, manage_permissions=True)
-        
-        embed = build_verification_embed(ctx.guild)
-        view = ServerVerificationView()
-        await ctx.channel.send(embed=embed, view=view)
-        
-        guide_msg = (
-            f"✅ **Verification System Configured Successfully!**\n\n"
-            f"📌 **What was configured:**\n"
-            f"• Verified Role set to: {role.mention}\n"
-            f"• Current channel locked: `@everyone` can see only this channel and cannot type.\n"
-            f"• Once verified, this channel will hide for {role.mention} members.\n\n"
-            f"⚙️ **Next Step for Server Categories:**\n"
-            f"Go to your other server categories (General, Chats, Voice, Products):\n"
-            f"1. Set `@everyone` -> **View Channel: Deny (❌)**\n"
-            f"2. Set {role.mention} -> **View Channel: Allow (✅)**\n\n"
-            f"*New members will now see ONLY this channel until they click **Verify Member**!*"
+        # A. Setup #verification channel
+        await target_channel.set_permissions(ctx.guild.default_role, view_channel=True, send_messages=False, read_message_history=True)
+        await target_channel.set_permissions(role, view_channel=False)
+        await target_channel.set_permissions(ctx.guild.me, view_channel=True, send_messages=True, manage_channels=True, manage_permissions=True)
+
+        # B. Lockdown all categories
+        for cat in ctx.guild.categories:
+            is_staff_only = any(term in cat.name.lower() for term in staff_only_cat_names)
+            # Deny @everyone view channel
+            await cat.set_permissions(ctx.guild.default_role, view_channel=False)
+            if not is_staff_only:
+                # Allow verified role view channel
+                await cat.set_permissions(role, view_channel=True)
+            categories_locked += 1
+            await asyncio.sleep(0.2)
+
+        # C. Lockdown standalone channels
+        for ch in ctx.guild.channels:
+            if ch.category is None and ch.id != target_channel.id:
+                is_staff_only = any(term in ch.name.lower() for term in staff_only_cat_names)
+                await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+                if not is_staff_only:
+                    await ch.set_permissions(role, view_channel=True)
+                await asyncio.sleep(0.2)
+
+        # D. Post panel in verification channel if not present
+        has_panel = False
+        async for m in target_channel.history(limit=5):
+            if m.author == ctx.guild.me and m.components:
+                has_panel = True
+                break
+        if not has_panel:
+            embed = build_verification_embed(ctx.guild)
+            view = ServerVerificationView()
+            await target_channel.send(embed=embed, view=view)
+
+        # E. Sync existing members
+        synced_members = 0
+        for m in ctx.guild.members:
+            if not m.bot and role not in m.roles:
+                try:
+                    await m.add_roles(role, reason="Auto-Verification Setup Member Sync")
+                    synced_members += 1
+                except Exception:
+                    pass
+
+        embed_done = discord.Embed(
+            title="🛡️ Server Verification Gateway 100% Configured!",
+            description=(
+                f"✅ **Automated Security Active:**\n\n"
+                f"• **Verified Role:** {role.mention}\n"
+                f"• **Verification Gate:** {target_channel.mention}\n"
+                f"• **Categories Protected:** `{categories_locked}` server categories locked to `@everyone`.\n"
+                f"• **Existing Members Synced:** `{synced_members}` current members granted role.\n\n"
+                f"🔒 **How It Works Now:**\n"
+                f"1. New members joining see **ONLY** {target_channel.mention}. All chats, products & voice channels are completely invisible.\n"
+                f"2. Member clicks **Verify Member** button.\n"
+                f"3. Bot gives {role.mention} role instantly.\n"
+                f"4. {target_channel.mention} hides and **ALL** server channels unlock for them!"
+            ),
+            color=0x00FF88
         )
-        await ctx.reply(guide_msg)
+        await status_msg.edit(content=None, embed=embed_done)
     except Exception as e:
-        logger.error(f"Failed in autoverifysetup: {e}")
-        await ctx.reply(f"❌ Failed to set permissions automatically: `{e}`")
+        logger.error(f"Error in autoverifysetup: {e}")
+        await status_msg.edit(content=f"❌ **Error during automated setup:** `{e}`")
 
 
 @bot.command(name="verifyinfo")
@@ -9587,6 +9673,420 @@ async def verifyuser_cmd(ctx, member: discord.Member = None):
     except Exception as e:
         await ctx.reply(f"❌ Failed to verify user: `{e}`")
 
+
+
+# ==============================================================================
+# BYTE CORPORATION — AUTO ROLE SYSTEM (*autorole)
+# Automatically assigns roles to new members and/or bots on join.
+# ==============================================================================
+
+AUTOROLE_CONFIG_FILE = os.path.join(BASE_DIR, "autorole_config.json")
+
+
+def load_autorole_config() -> dict:
+    default_cfg = {
+        "enabled": True,
+        "human_role_id": None,
+        "bot_role_id": None
+    }
+    if os.path.exists(AUTOROLE_CONFIG_FILE):
+        try:
+            with open(AUTOROLE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    default_cfg.update(data)
+        except Exception as e:
+            logger.error(f"Error loading autorole_config.json: {e}")
+    return default_cfg
+
+
+def save_autorole_config(cfg: dict):
+    try:
+        with open(AUTOROLE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error saving autorole_config.json: {e}")
+
+
+def build_autorole_embed(guild: discord.Guild) -> discord.Embed:
+    cfg = load_autorole_config()
+    is_enabled = cfg.get("enabled", True)
+
+    h_role_id = cfg.get("human_role_id")
+    h_role = guild.get_role(int(h_role_id)) if h_role_id and guild else None
+    h_role_str = h_role.mention if h_role else ("`Not Configured`" if not h_role_id else f"`Role Not Found ({h_role_id})`")
+
+    b_role_id = cfg.get("bot_role_id")
+    b_role = guild.get_role(int(b_role_id)) if b_role_id and guild else None
+    b_role_str = b_role.mention if b_role else ("`Not Configured`" if not b_role_id else f"`Role Not Found ({b_role_id})`")
+
+    embed = discord.Embed(
+        title="🎭 BYTE CORPORATION » Auto Role System",
+        description=(
+            "Automatically assign roles to new human members and bots as soon as they join the server.\n\n"
+            "Use the interactive buttons below or run prefix commands to configure."
+        ),
+        color=0x0000FF if is_enabled else 0x5865F2
+    )
+    if guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    embed.add_field(name="⚡ System Status", value="🟢 **Active (Enabled)**" if is_enabled else "🔴 **Disabled**", inline=True)
+    embed.add_field(name="👤 Human Auto Role", value=h_role_str, inline=True)
+    embed.add_field(name="🤖 Bot Auto Role", value=b_role_str, inline=True)
+
+    embed.add_field(
+        name="📋 Commands & Quick Usage",
+        value=(
+            "• `*autorole humans @Role` — Set role for new human members\n"
+            "• `*autorole bots @Role` — Set role for new bots\n"
+            "• `*autorole toggle` — Turn Auto Role ON or OFF\n"
+            "• `*autorole remove humans` / `*autorole remove bots` — Clear role\n"
+            "• `*autorole test` — Test Auto Role assignment on yourself"
+        ),
+        inline=False
+    )
+    embed.set_footer(text=f"{guild.name if guild else 'BYTE CORPORATION'} • Auto Role Security Gateway")
+    return embed
+
+
+class ByteAutoroleRoleModal(discord.ui.Modal):
+    def __init__(self, target_type: str, title: str):
+        super().__init__(title=title)
+        self.target_type = target_type
+        self.role_input = discord.ui.TextInput(
+            label="Role Name or Role ID",
+            placeholder="e.g. Member or 1566796494504333353",
+            min_length=1,
+            max_length=100,
+            required=True
+        )
+        self.add_item(self.role_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ This can only be configured in a server.", ephemeral=True)
+            return
+        val = self.role_input.value.strip().strip("<@&>")
+        found_role = None
+        if val.isdigit():
+            found_role = guild.get_role(int(val))
+        if not found_role:
+            for r in guild.roles:
+                if r.name.lower() == val.lower():
+                    found_role = r
+                    break
+        if not found_role:
+            for r in guild.roles:
+                if val.lower() in r.name.lower():
+                    found_role = r
+                    break
+
+        if not found_role:
+            await interaction.response.send_message(f"❌ Role `{val}` not found in this server. Please enter a valid Role Name or Role ID.", ephemeral=True)
+            return
+
+        if guild.me.top_role <= found_role:
+            await interaction.response.send_message("❌ **Bot Hierarchy Error:** The bot's highest role must be placed ABOVE this role to assign it.", ephemeral=True)
+            return
+
+        cfg = load_autorole_config()
+        if self.target_type == "humans":
+            cfg["human_role_id"] = found_role.id
+            save_autorole_config(cfg)
+            emb = build_autorole_embed(guild)
+            await interaction.response.edit_message(embed=emb, view=ByteAutoroleView())
+            await interaction.followup.send(f"✅ **Human Auto Role updated to:** {found_role.mention}\n*New members joining will automatically receive this role.*", ephemeral=True)
+        else:
+            cfg["bot_role_id"] = found_role.id
+            save_autorole_config(cfg)
+            emb = build_autorole_embed(guild)
+            await interaction.response.edit_message(embed=emb, view=ByteAutoroleView())
+            await interaction.followup.send(f"✅ **Bot Auto Role updated to:** {found_role.mention}\n*New bots invited will automatically receive this role.*", ephemeral=True)
+
+
+class ByteAutoroleView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Set Human Role", emoji="👤", style=discord.ButtonStyle.primary, custom_id="btn_ar_set_human", row=0)
+    async def btn_set_human(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_admin_or_owner_access(interaction.user):
+            await interaction.response.send_message("❌ Only Administrators can configure Auto Role.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ByteAutoroleRoleModal(target_type="humans", title="Set Human Auto Role"))
+
+    @discord.ui.button(label="Set Bot Role", emoji="🤖", style=discord.ButtonStyle.secondary, custom_id="btn_ar_set_bot", row=0)
+    async def btn_set_bot(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_admin_or_owner_access(interaction.user):
+            await interaction.response.send_message("❌ Only Administrators can configure Auto Role.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ByteAutoroleRoleModal(target_type="bots", title="Set Bot Auto Role"))
+
+    @discord.ui.button(label="Toggle ON/OFF", emoji="⚡", style=discord.ButtonStyle.success, custom_id="btn_ar_toggle", row=0)
+    async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_admin_or_owner_access(interaction.user):
+            await interaction.response.send_message("❌ Only Administrators can toggle Auto Role.", ephemeral=True)
+            return
+        cfg = load_autorole_config()
+        cfg["enabled"] = not cfg.get("enabled", True)
+        save_autorole_config(cfg)
+        emb = build_autorole_embed(interaction.guild)
+        state_str = "🟢 **Enabled**" if cfg["enabled"] else "🔴 **Disabled**"
+        await interaction.response.edit_message(embed=emb, view=self)
+        await interaction.followup.send(f"⚡ Auto Role system is now {state_str}!", ephemeral=True)
+
+    @discord.ui.button(label="Test On Me", emoji="🧪", style=discord.ButtonStyle.secondary, custom_id="btn_ar_test", row=1)
+    async def btn_test(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_autorole_config()
+        h_id = cfg.get("human_role_id")
+        if not h_id:
+            await interaction.response.send_message("⚠️ Human Auto Role has not been set yet! Click **Set Human Role** first.", ephemeral=True)
+            return
+        role = interaction.guild.get_role(int(h_id)) if interaction.guild else None
+        if not role:
+            await interaction.response.send_message("❌ Configured Auto Role was not found in this server.", ephemeral=True)
+            return
+        if interaction.guild.me.top_role <= role:
+            await interaction.response.send_message("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.", ephemeral=True)
+            return
+        try:
+            if role in interaction.user.roles:
+                await interaction.response.send_message(f"ℹ️ You already have the Auto Role: {role.mention}", ephemeral=True)
+            else:
+                await interaction.user.add_roles(role, reason="Auto Role Self-Test")
+                await interaction.response.send_message(f"✅ **Auto Role Test Successful!** Assigned {role.mention} to you.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to assign role: `{e}`", ephemeral=True)
+
+    @discord.ui.button(label="Reset", emoji="🔄", style=discord.ButtonStyle.danger, custom_id="btn_ar_reset", row=1)
+    async def btn_reset(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not has_admin_or_owner_access(interaction.user):
+            await interaction.response.send_message("❌ Only Administrators can reset Auto Role.", ephemeral=True)
+            return
+        save_autorole_config({"enabled": True, "human_role_id": None, "bot_role_id": None})
+        emb = build_autorole_embed(interaction.guild)
+        await interaction.response.edit_message(embed=emb, view=self)
+        await interaction.followup.send("🔄 Auto Role configuration has been reset to default.", ephemeral=True)
+
+
+@bot.command(name="autorole", aliases=["autoroles", "joinrole", "ar"])
+async def autorole_cmd(ctx, mode: str = None, *, arg: str = None):
+    """
+    Auto Role Management Suite:
+    • `*autorole` — Opens the interactive Auto Role dashboard
+    • `*autorole humans @Role` — Sets the auto role for new human members
+    • `*autorole bots @Role` — Sets the auto role for new bots
+    • `*autorole toggle` — Toggles Auto Role system ON or OFF
+    • `*autorole remove humans|bots` — Clears the configured role
+    • `*autorole test` — Tests auto role assignment on command author
+    """
+    if not has_admin_or_owner_access(ctx.author) and not ctx.author.guild_permissions.manage_roles:
+        await ctx.reply("❌ Only an **Administrator** or **Staff with Manage Roles** can configure Auto Role.")
+        return
+
+    cfg = load_autorole_config()
+
+    if not mode:
+        embed = build_autorole_embed(ctx.guild)
+        view = ByteAutoroleView()
+        await ctx.reply(embed=embed, view=view)
+        return
+
+    mode = mode.lower().strip()
+
+    if mode in ["toggle", "switch"]:
+        cfg["enabled"] = not cfg.get("enabled", True)
+        save_autorole_config(cfg)
+        status_txt = "🟢 **Enabled**" if cfg["enabled"] else "🔴 **Disabled**"
+        await ctx.reply(f"⚡ **Auto Role system is now {status_txt}!**")
+        return
+
+    if mode in ["on", "enable"]:
+        cfg["enabled"] = True
+        save_autorole_config(cfg)
+        await ctx.reply("🟢 **Auto Role system has been enabled!**")
+        return
+
+    if mode in ["off", "disable"]:
+        cfg["enabled"] = False
+        save_autorole_config(cfg)
+        await ctx.reply("🔴 **Auto Role system has been disabled!**")
+        return
+
+    if mode == "test":
+        h_id = cfg.get("human_role_id")
+        if not h_id:
+            await ctx.reply("⚠️ Human Auto Role has not been set yet! Use `*autorole humans @Role`.")
+            return
+        role = ctx.guild.get_role(int(h_id))
+        if not role:
+            await ctx.reply("❌ Configured Auto Role was not found in this server.")
+            return
+        if ctx.guild.me.top_role <= role:
+            await ctx.reply("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.")
+            return
+        try:
+            if role in ctx.author.roles:
+                await ctx.reply(f"ℹ️ You already have the Auto Role: {role.mention}")
+            else:
+                await ctx.author.add_roles(role, reason="Auto Role Self-Test")
+                await ctx.reply(f"✅ **Auto Role Test Successful!** Assigned {role.mention} to you.")
+        except Exception as e:
+            await ctx.reply(f"❌ Failed to assign role: `{e}`")
+        return
+
+    if mode in ["remove", "clear", "delete"]:
+        which = (arg or "").lower().strip()
+        if "bot" in which:
+            cfg["bot_role_id"] = None
+            save_autorole_config(cfg)
+            await ctx.reply("🗑️ **Bot Auto Role has been removed.**")
+        elif "human" in which or "member" in which or "user" in which:
+            cfg["human_role_id"] = None
+            save_autorole_config(cfg)
+            await ctx.reply("🗑️ **Human Auto Role has been removed.**")
+        else:
+            await ctx.reply("Usage: `*autorole remove humans` or `*autorole remove bots`")
+        return
+
+    # Mode: humans or bots
+    if mode in ["human", "humans", "member", "members", "user", "users", "set"]:
+        if not arg and not ctx.message.role_mentions:
+            await ctx.reply("Usage: `*autorole humans @Role` or `*autorole humans <role_name_or_id>`")
+            return
+        role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        if not role and arg:
+            clean_arg = arg.strip().strip("<@&>")
+            if clean_arg.isdigit():
+                role = ctx.guild.get_role(int(clean_arg))
+            if not role:
+                for r in ctx.guild.roles:
+                    if r.name.lower() == clean_arg.lower():
+                        role = r
+                        break
+        if not role:
+            await ctx.reply(f"❌ Could not find role `{arg}` in this server.")
+            return
+        if ctx.guild.me.top_role <= role:
+            await ctx.reply("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.")
+            return
+        cfg["human_role_id"] = role.id
+        save_autorole_config(cfg)
+        await ctx.reply(f"✅ **Human Auto Role configured to:** {role.mention}\n*New members joining will automatically receive this role.*")
+        return
+
+    if mode in ["bot", "bots"]:
+        if not arg and not ctx.message.role_mentions:
+            await ctx.reply("Usage: `*autorole bots @Role` or `*autorole bots <role_name_or_id>`")
+            return
+        role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        if not role and arg:
+            clean_arg = arg.strip().strip("<@&>")
+            if clean_arg.isdigit():
+                role = ctx.guild.get_role(int(clean_arg))
+            if not role:
+                for r in ctx.guild.roles:
+                    if r.name.lower() == clean_arg.lower():
+                        role = r
+                        break
+        if not role:
+            await ctx.reply(f"❌ Could not find role `{arg}` in this server.")
+            return
+        if ctx.guild.me.top_role <= role:
+            await ctx.reply("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.")
+            return
+        cfg["bot_role_id"] = role.id
+        save_autorole_config(cfg)
+        await ctx.reply(f"✅ **Bot Auto Role configured to:** {role.mention}\n*New bots invited will automatically receive this role.*")
+        return
+
+    # Fallback to direct role mention: `*autorole @Role`
+    if ctx.message.role_mentions:
+        role = ctx.message.role_mentions[0]
+        if ctx.guild.me.top_role <= role:
+            await ctx.reply("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.")
+            return
+        cfg["human_role_id"] = role.id
+        save_autorole_config(cfg)
+        await ctx.reply(f"✅ **Human Auto Role configured to:** {role.mention}\n*New members joining will automatically receive this role.*")
+        return
+
+    await ctx.reply("❓ **Unknown option.** Use `*autorole` to open the control panel, or `*autorole humans @Role`.")
+
+
+@bot.tree.command(name="autorole", description="Open the interactive Auto Role dashboard or configure auto roles")
+@app_commands.describe(
+    action="Action to perform",
+    role="Role to set (optional)"
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="Open Dashboard", value="dashboard"),
+    app_commands.Choice(name="Set Human Auto Role", value="humans"),
+    app_commands.Choice(name="Set Bot Auto Role", value="bots"),
+    app_commands.Choice(name="Toggle ON/OFF", value="toggle"),
+    app_commands.Choice(name="Test On Myself", value="test")
+])
+async def autorole_slash(interaction: discord.Interaction, action: str = "dashboard", role: discord.Role = None):
+    if not has_admin_or_owner_access(interaction.user) and not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("❌ Only Administrators or Staff with Manage Roles can configure Auto Role.", ephemeral=True)
+        return
+
+    cfg = load_autorole_config()
+
+    if action == "dashboard" or (not role and action in ["humans", "bots"]):
+        embed = build_autorole_embed(interaction.guild)
+        view = ByteAutoroleView()
+        await interaction.response.send_message(embed=embed, view=view)
+        return
+
+    if action == "toggle":
+        cfg["enabled"] = not cfg.get("enabled", True)
+        save_autorole_config(cfg)
+        status_txt = "🟢 **Enabled**" if cfg["enabled"] else "🔴 **Disabled**"
+        await interaction.response.send_message(f"⚡ **Auto Role system is now {status_txt}!**", ephemeral=True)
+        return
+
+    if action == "test":
+        h_id = cfg.get("human_role_id")
+        if not h_id:
+            await interaction.response.send_message("⚠️ Human Auto Role has not been set yet!", ephemeral=True)
+            return
+        role_obj = interaction.guild.get_role(int(h_id))
+        if not role_obj:
+            await interaction.response.send_message("❌ Configured Auto Role was not found in this server.", ephemeral=True)
+            return
+        if interaction.guild.me.top_role <= role_obj:
+            await interaction.response.send_message("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.", ephemeral=True)
+            return
+        try:
+            if role_obj in interaction.user.roles:
+                await interaction.response.send_message(f"ℹ️ You already have the Auto Role: {role_obj.mention}", ephemeral=True)
+            else:
+                await interaction.user.add_roles(role_obj, reason="Auto Role Self-Test")
+                await interaction.response.send_message(f"✅ **Auto Role Test Successful!** Assigned {role_obj.mention} to you.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to assign role: `{e}`", ephemeral=True)
+        return
+
+    if action == "humans":
+        if interaction.guild.me.top_role <= role:
+            await interaction.response.send_message("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.", ephemeral=True)
+            return
+        cfg["human_role_id"] = role.id
+        save_autorole_config(cfg)
+        await interaction.response.send_message(f"✅ **Human Auto Role configured to:** {role.mention}\n*New members joining will automatically receive this role.*")
+        return
+
+    if action == "bots":
+        if interaction.guild.me.top_role <= role:
+            await interaction.response.send_message("❌ **Bot Hierarchy Error:** Bot's highest role must be placed ABOVE this role.", ephemeral=True)
+            return
+        cfg["bot_role_id"] = role.id
+        save_autorole_config(cfg)
+        await interaction.response.send_message(f"✅ **Bot Auto Role configured to:** {role.mention}\n*New bots invited will automatically receive this role.*")
+        return
 
 # ==========================================
 # STATUS & HELP COMMANDS
@@ -11556,7 +12056,33 @@ async def on_member_join(member: discord.Member):
                     logger.info(f"🤖 Bot {member.name} ({member.id}) auto-verified with role {v_role.name}")
         except Exception as e:
             logger.warning(f"Could not auto-grant verified role to bot {member.name}: {e}")
+        # --- BOT AUTO ROLE ---
+        try:
+            ar_cfg = load_autorole_config()
+            if ar_cfg.get("enabled", True):
+                b_role_id = ar_cfg.get("bot_role_id")
+                if b_role_id and member.guild:
+                    b_role = member.guild.get_role(int(b_role_id))
+                    if b_role and member.guild.me.top_role > b_role:
+                        await member.add_roles(b_role, reason="Bot Auto Role on Join")
+                        logger.info(f"🤖 Bot Auto Role {b_role.name} granted to {member.name}")
+        except Exception as e:
+            logger.warning(f"Error in on_member_join bot autorole: {e}")
+
         return  # Bots do not need DM welcomes
+
+    # --- AUTO ROLE (HUMAN MEMBERS) ---
+    try:
+        ar_cfg = load_autorole_config()
+        if ar_cfg.get("enabled", True):
+            h_role_id = ar_cfg.get("human_role_id")
+            if h_role_id and member.guild:
+                h_role = member.guild.get_role(int(h_role_id))
+                if h_role and member.guild.me.top_role > h_role:
+                    await member.add_roles(h_role, reason="Auto Role on Join for Member")
+                    logger.info(f"🎭 Auto Role {h_role.name} granted to member {member.name} ({member.id})")
+    except Exception as e:
+        logger.warning(f"Error in on_member_join human autorole: {e}")
 
     # --- 1. PERSONAL DM WELCOME ---
     try:
