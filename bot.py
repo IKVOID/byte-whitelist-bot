@@ -10709,7 +10709,8 @@ async def setrepo_cmd(ctx, repo_url: str = None):
         return
 
     if not repo_url:
-        current_repo = BOT_CONFIG.get("github_repo", "Not Set")
+        cfg = load_config()
+        current_repo = cfg.get("github_repo", "Not Set")
         await ctx.reply(f"\u2139\uFE0F **Current GitHub Repository:** `{current_repo}`\nUsage: `*setrepo <github_repo_url>`")
         return
 
@@ -10725,13 +10726,10 @@ async def setrepo_cmd(ctx, repo_url: str = None):
     else:
         raw_url = repo_url
 
-    BOT_CONFIG["github_repo"] = repo_url
-    BOT_CONFIG["github_raw_url"] = raw_url
-    try:
-        with open("config.json", "w", encoding="utf-8") as f:
-            json.dump(BOT_CONFIG, f, indent=4)
-    except Exception as e:
-        logger.error(f"Error saving config.json: {e}")
+    cfg = load_config()
+    cfg["github_repo"] = repo_url
+    cfg["github_raw_url"] = raw_url
+    save_config(cfg)
 
     embed = discord.Embed(
         title="\u2705 GitHub Repository Linked!",
@@ -10790,19 +10788,32 @@ async def update_cmd(ctx, mode: str = "git", *, arg: str = None):
 
     # Helper function for URL download
     async def download_and_restart(target_url: str):
-        msg = await ctx.reply(f"\U0001F4E5 **Downloading update directly from GitHub:**\n`{target_url}`...")
+        target_url = target_url.strip().strip("<>()[]\"'`").rstrip(").,;>")
+        # Normalize web github link to raw usercontent link if user passed repo/blob link
+        if "github.com" in target_url and "raw.githubusercontent.com" not in target_url:
+            clean = target_url.replace("https://github.com/", "").replace("http://github.com/", "")
+            parts = [p for p in clean.split("/") if p and p != "blob"]
+            if len(parts) >= 3:
+                owner, repo_name, branch = parts[0], parts[1], parts[2]
+                rest = "/".join(parts[3:]) if len(parts) > 3 else "bot.py"
+                target_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/{branch}/{rest}"
+            elif len(parts) == 2:
+                owner, repo_name = parts[0], parts[1].replace(".git", "")
+                target_url = f"https://raw.githubusercontent.com/{owner}/{repo_name}/main/bot.py"
+
+        msg = await ctx.reply(f"📥 **Downloading update directly from GitHub:**\n`{target_url}`...")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(target_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                     if resp.status != 200:
-                        await msg.edit(content=f"\u274C **Failed to download:** HTTP {resp.status}")
+                        await msg.edit(content=f"❌ **Failed to download:** HTTP {resp.status}")
                         return
                     new_code = (await resp.text(encoding="utf-8")).lstrip('\ufeff')
 
             try:
                 ast.parse(new_code)
             except SyntaxError as syn_err:
-                await msg.edit(content=f"\u274C **Syntax Error in downloaded code:** `{syn_err}`\nUpdate aborted for safety!")
+                await msg.edit(content=f"❌ **Syntax Error in downloaded code:** `{syn_err}`\nUpdate aborted for safety!")
                 return
 
             current_path = os.path.abspath(__file__)
@@ -10816,8 +10827,8 @@ async def update_cmd(ctx, mode: str = "git", *, arg: str = None):
                 f.write(new_code)
 
             embed = discord.Embed(
-                title="\U0001F680 Online Update Installed!",
-                description="New code successfully downloaded and verified!\n\U0001F504 **Restarting bot now... Please wait 5-10 seconds!**",
+                title="🚀 Online Update Installed!",
+                description="New code successfully downloaded and verified!\n🔄 **Restarting bot now... Please wait 5-10 seconds!**",
                 color=0x00FF88
             )
             await msg.edit(content=None, embed=embed)
@@ -10825,21 +10836,24 @@ async def update_cmd(ctx, mode: str = "git", *, arg: str = None):
             await bot.close()
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except Exception as e:
-            await msg.edit(content=f"\u274C **Update failed:** `{e}`")
+            await msg.edit(content=f"❌ **Update failed:** `{e}`")
 
-    if mode == "url":
-        if not arg:
-            await ctx.reply("\u274C **Usage:** `*update url <raw_github_url_to_bot.py>`")
-            return
-        await download_and_restart(arg.strip())
+    cfg = load_config()
+    cfg_raw_url = cfg.get("github_raw_url") or "https://raw.githubusercontent.com/IKVOID/byte-whitelist-bot/main/bot.py"
+
+    # Support *update https://raw.githubusercontent.com/... directly
+    if mode.startswith("http://") or mode.startswith("https://"):
+        await download_and_restart(mode)
         return
 
-    # Check if .git exists or if github_raw_url is configured in config.json
-    has_git_folder = os.path.exists(".git")
-    cfg_raw_url = BOT_CONFIG.get("github_raw_url")
+    if mode == "url":
+        url_to_use = arg.strip() if arg else cfg_raw_url
+        await download_and_restart(url_to_use)
+        return
 
-    # If no .git folder but github_raw_url is set, automatically use direct sync!
-    if not has_git_folder and cfg_raw_url:
+    # If no .git folder or default update
+    has_git_folder = os.path.exists(".git")
+    if not has_git_folder:
         await download_and_restart(cfg_raw_url)
         return
 
@@ -11506,6 +11520,7 @@ class ByteWelcomeEditorView(discord.ui.View):
         try:
             if embed:
                 await interaction.user.send(content=content, embed=embed)
+            elif content:
                 await interaction.user.send(content=content)
             await interaction.response.send_message("📬 **Test Welcome DM sent to your private messages!** Check your DMs.", ephemeral=True)
         except discord.Forbidden:
@@ -11551,6 +11566,7 @@ async def on_member_join(member: discord.Member):
             try:
                 if embed:
                     await member.send(content=content, embed=embed)
+                elif content:
                     await member.send(content=content)
                 logger.info(f"📬 Welcome DM successfully delivered to {member.name} ({member.id}) in guild '{member.guild.name}'")
             except discord.Forbidden:
@@ -11574,10 +11590,12 @@ async def on_member_join(member: discord.Member):
                             await channel.send(content=content, embed=embed, file=file)
                         elif embed:
                             await channel.send(content=content, embed=embed)
+                        elif content:
                             await channel.send(content=content)
                         logger.info(f"🎉 Server Welcome message sent for {member.name} in channel #{channel.name}")
                     except Exception as e:
                         logger.warning(f"Failed to send Server Welcome in channel #{channel.name}: {e}")
+                else:
                     logger.warning(f"Server welcome channel ID {ch_id} not found in guild {member.guild.name}")
     except Exception as e:
         logger.error(f"Error in on_member_join Server welcome: {e}")
@@ -11611,6 +11629,7 @@ async def welcometest_cmd(ctx):
     try:
         if embed:
             await ctx.author.send(content=content, embed=embed)
+        elif content:
             await ctx.author.send(content=content)
         await ctx.reply("📬 **Test Welcome DM sent to your DMs!** Check your messages.")
     except discord.Forbidden:
@@ -11625,6 +11644,7 @@ async def welcometest_slash(interaction: discord.Interaction):
     try:
         if embed:
             await interaction.user.send(content=content, embed=embed)
+        elif content:
             await interaction.user.send(content=content)
         await interaction.response.send_message("📬 **Test Welcome DM sent to your DMs!** Check your private messages.", ephemeral=True)
     except discord.Forbidden:
@@ -12187,6 +12207,7 @@ class ByteServerWelcomeEditorView(discord.ui.View):
                 await target_ch.send(content=content, embed=embed, file=file)
             elif embed:
                 await target_ch.send(content=content, embed=embed)
+            elif content:
                 await target_ch.send(content=content)
             await interaction.response.send_message(f"🎉 **Live test welcome sent to {target_ch.mention}!**", ephemeral=True)
         except Exception as e:
@@ -12265,6 +12286,7 @@ async def serverwelcometest_cmd(ctx):
             await target_ch.send(content=content, embed=embed, file=file)
         elif embed:
             await target_ch.send(content=content, embed=embed)
+        elif content:
             await target_ch.send(content=content)
         await ctx.reply(f"🎉 **Live test welcome sent to {target_ch.mention}!** Check the channel.")
     except Exception as e:
@@ -12291,6 +12313,7 @@ async def serverwelcometest_slash(interaction: discord.Interaction):
             await target_ch.send(content=content, embed=embed, file=file)
         elif embed:
             await target_ch.send(content=content, embed=embed)
+        elif content:
             await target_ch.send(content=content)
         await interaction.response.send_message(f"🎉 **Live test welcome sent to {target_ch.mention}!** Check the channel.", ephemeral=True)
     except Exception as e:
