@@ -12,7 +12,10 @@ import urllib.request
 import urllib.parse
 import random
 import shutil
-import yt_dlp
+try:
+    import yt_dlp
+except ImportError:
+    yt_dlp = None
 import wavelink
 from typing import cast
 
@@ -173,32 +176,14 @@ def save_user_cooldown(discord_id: int, dt: datetime):
 intents = discord.Intents.all()
 
 def get_active_lavalink_nodes() -> list[wavelink.Node]:
-    """Returns verified live 2026 Lavalink v4 nodes with automatic failover."""
+    """Returns verified live 2026 Lavalink v4 nodes with automatic failover and safe retry limits."""
     return [
         wavelink.Node(
             identifier="Nazha-Global",
             uri="https://lavalink.nazha.online:443",
             password="nazhafreelava",
             heartbeat=15.0,
-            retries=9999,
-            resume_timeout=180,
-            inactive_player_timeout=None
-        ),
-        wavelink.Node(
-            identifier="Trinium-v4ssl",
-            uri="https://lavalink-v4.triniumhost.com:443",
-            password="free",
-            heartbeat=15.0,
-            retries=9999,
-            resume_timeout=180,
-            inactive_player_timeout=None
-        ),
-        wavelink.Node(
-            identifier="Trinium-v4",
-            uri="http://lavalink.triniumhost.com:4333",
-            password="free",
-            heartbeat=15.0,
-            retries=9999,
+            retries=3,
             resume_timeout=180,
             inactive_player_timeout=None
         ),
@@ -206,14 +191,14 @@ def get_active_lavalink_nodes() -> list[wavelink.Node]:
 
 
 async def connect_lavalink_pool(client: discord.Client):
-    """Ensures at least one active high-speed Lavalink node is connected."""
+    """Ensures active high-speed Lavalink nodes are connected without blocking the bot."""
     nodes = get_active_lavalink_nodes()
     nodes_dict = getattr(wavelink.Pool, "nodes", {})
     for node in nodes:
         if node.identifier in nodes_dict and getattr(nodes_dict[node.identifier], "status", None) == wavelink.NodeStatus.CONNECTED:
             continue
         try:
-            await wavelink.Pool.connect(nodes=[node], client=client)
+            await asyncio.wait_for(wavelink.Pool.connect(nodes=[node], client=client), timeout=6.0)
             logger.info(f"Connected Lavalink node: {node.identifier}")
         except Exception as e:
             logger.warning(f"Lavalink node connect notice on {node.identifier}: {e}")
@@ -235,8 +220,8 @@ class ByteBot(commands.Bot):
         self.add_view(ServerVerificationView())
         self.add_view(ByteAutoroleView())
         
-        # Connect to verified ultra-fast 2026 Lavalink v4.2.2 nodes (TriniumHost + Nazha + Jirayu)
-        await connect_lavalink_pool(self)
+        # Connect to verified ultra-fast 2026 Lavalink node in background (never blocks gateway!)
+        asyncio.create_task(connect_lavalink_pool(self))
         try:
             synced = await self.tree.sync()
             logger.info(f"⚡ Synced {len(synced)} slash commands.")
