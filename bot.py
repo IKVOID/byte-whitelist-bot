@@ -9551,15 +9551,16 @@ async def setverifyrole_slash(interaction: discord.Interaction, role: discord.Ro
     await interaction.response.send_message(f"✅ **Verified Member Role updated to:** {role.mention}\n*Members clicking Verify Member will automatically receive this role.*", ephemeral=True)
 
 
-@bot.command(name="autoverifysetup", aliases=["quickverifysetup", "setupverify", "setupverification", "lockdownverification"])
+@bot.command(name="autoverifysetup", aliases=["quickverifysetup", "setupverify", "setupverification", "lockdownverification", "fixverification", "lockdownserver"])
 async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: discord.TextChannel = None):
     """
-    1-Click Complete Automated Verification Setup:
+    1-Click Complete Automated Verification Setup & Server Lockdown:
     1. Sets Verified Role & Verification Channel.
     2. Completely locks ALL server categories & channels so unverified users CANNOT see them.
-    3. Leaves ONLY the verification channel visible to @everyone.
-    4. Automatically hides the verification channel once verified.
-    5. Grants the verified role to all existing members so nobody gets locked out!
+    3. Synchronizes all child channels with their category so channel-level overrides are eliminated.
+    4. Leaves ONLY the verification channel visible to @everyone.
+    5. Automatically hides the verification channel once verified.
+    6. Grants the verified role to all existing members so nobody gets locked out!
     """
     if not has_admin_or_owner_access(ctx.author):
         await ctx.reply("❌ Only an **Administrator** or **Server Owner** can run automated verification setup.")
@@ -9571,21 +9572,36 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
     if not role:
         role_id = cfg.get("role_id")
         if role_id:
-            role = ctx.guild.get_role(role_id)
+            try:
+                role = ctx.guild.get_role(int(role_id))
+            except (ValueError, TypeError):
+                role = None
         if not role:
             for r in ctx.guild.roles:
-                if r.name.lower() in ["verify", "verified", "member", ".member"]:
+                if r.name.lower() in ["verify", "verified", "member", ".member", "@.gg/bytecorporation", ".gg/bytecorporation"]:
                     role = r
                     break
     if not role:
-        await ctx.reply("❌ **Role Not Found:** Please specify the verified role, e.g.: `*autoverifysetup @verify`")
+        await ctx.reply("❌ **Role Not Found:** Please specify the verified role, e.g.: `*autoverifysetup @.gg/bytecorporation`")
         return
+
+    # Check bot hierarchy
+    hierarchy_warning = ""
+    if ctx.guild.me.top_role <= role:
+        hierarchy_warning = (
+            f"\n\n⚠️ **IMPORTANT ROLE HIERARCHY NOTICE:**\n"
+            f"The bot's role (`{ctx.guild.me.top_role.name}`) is currently placed **BELOW** `{role.name}` in Server Settings > Roles!\n"
+            f"👉 Go to **Server Settings > Roles** and drag **`{ctx.guild.me.top_role.name}` ABOVE `{role.name}`** so the bot can assign the role when users click the button!"
+        )
 
     # Determine Verification Channel
     if not target_channel:
         ch_id = cfg.get("channel_id")
         if ch_id:
-            target_channel = ctx.guild.get_channel(ch_id)
+            try:
+                target_channel = ctx.guild.get_channel(int(ch_id))
+            except (ValueError, TypeError):
+                target_channel = None
         if not target_channel:
             if "veri" in ctx.channel.name.lower():
                 target_channel = ctx.channel
@@ -9597,23 +9613,24 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
     if not target_channel:
         target_channel = ctx.channel
 
-    status_msg = await ctx.reply(f"⏳ **Configuring Automated Server Verification Gateway...**\n• Role: {role.mention}\n• Channel: {target_channel.mention}\n*Please wait...*")
+    status_msg = await ctx.reply(f"⏳ **Locking down server & configuring Verification Gateway...**\n• Verified Role: {role.mention}\n• Verification Gate: {target_channel.mention}\n*Please wait while all categories and channels are secured...*")
 
     cfg["enabled"] = True
     cfg["role_id"] = role.id
     cfg["channel_id"] = target_channel.id
     save_verification_config(cfg)
 
-    staff_only_cat_names = ["logs", "zynrax logs", "keyauth", "keyauth and uid wl", "admin", "mod", "moderator"]
+    staff_only_cat_names = ["logs", "zynrax logs", "zynrax automod", "keyauth", "keyauth and uid wl", "admin", "mod", "moderator", "staff"]
 
     categories_locked = 0
+    channels_locked = 0
     try:
-        # A. Setup #verification channel
+        # A. Setup #verification channel: Visible to @everyone, hidden from verified role
         await target_channel.set_permissions(ctx.guild.default_role, view_channel=True, send_messages=False, read_message_history=True)
         await target_channel.set_permissions(role, view_channel=False)
-        await target_channel.set_permissions(ctx.guild.me, view_channel=True, send_messages=True, manage_channels=True, manage_permissions=True)
+        await target_channel.set_permissions(ctx.guild.me, view_channel=True, send_messages=True, embed_links=True, manage_channels=True, manage_permissions=True)
 
-        # B. Lockdown all categories
+        # B. Lockdown all categories & synchronize child channels
         for cat in ctx.guild.categories:
             is_staff_only = any(term in cat.name.lower() for term in staff_only_cat_names)
             # Deny @everyone view channel
@@ -9621,21 +9638,47 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
             if not is_staff_only:
                 # Allow verified role view channel
                 await cat.set_permissions(role, view_channel=True)
+            else:
+                # Staff-only categories remain hidden from verified normal members
+                await cat.set_permissions(role, view_channel=False)
             categories_locked += 1
+
+            # Sync and lock every channel inside this category so explicit @everyone allow is deleted
+            for ch in cat.channels:
+                if ch.id == target_channel.id:
+                    continue
+                try:
+                    # Sync permissions with category
+                    await ch.edit(sync_permissions=True)
+                except Exception:
+                    try:
+                        await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+                        if not is_staff_only:
+                            await ch.set_permissions(role, view_channel=True)
+                        else:
+                            await ch.set_permissions(role, view_channel=False)
+                    except Exception:
+                        pass
+                channels_locked += 1
+                await asyncio.sleep(0.1)
+
             await asyncio.sleep(0.2)
 
-        # C. Lockdown standalone channels
+        # C. Lockdown standalone channels (channels without a category)
         for ch in ctx.guild.channels:
             if ch.category is None and ch.id != target_channel.id:
                 is_staff_only = any(term in ch.name.lower() for term in staff_only_cat_names)
                 await ch.set_permissions(ctx.guild.default_role, view_channel=False)
                 if not is_staff_only:
                     await ch.set_permissions(role, view_channel=True)
-                await asyncio.sleep(0.2)
+                else:
+                    await ch.set_permissions(role, view_channel=False)
+                channels_locked += 1
+                await asyncio.sleep(0.15)
 
         # D. Post panel in verification channel if not present
         has_panel = False
-        async for m in target_channel.history(limit=5):
+        async for m in target_channel.history(limit=10):
             if m.author == ctx.guild.me and m.components:
                 has_panel = True
                 break
@@ -9644,15 +9687,16 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
             view = ServerVerificationView()
             await target_channel.send(embed=embed, view=view)
 
-        # E. Sync existing members
+        # E. Sync existing members so they don't get locked out
         synced_members = 0
-        for m in ctx.guild.members:
-            if not m.bot and role not in m.roles:
-                try:
-                    await m.add_roles(role, reason="Auto-Verification Setup Member Sync")
-                    synced_members += 1
-                except Exception:
-                    pass
+        if ctx.guild.me.top_role > role:
+            for m in ctx.guild.members:
+                if not m.bot and role not in m.roles:
+                    try:
+                        await m.add_roles(role, reason="Auto-Verification Setup Member Sync")
+                        synced_members += 1
+                    except Exception:
+                        pass
 
         embed_done = discord.Embed(
             title="🛡️ Server Verification Gateway 100% Configured!",
@@ -9660,13 +9704,14 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
                 f"✅ **Automated Security Active:**\n\n"
                 f"• **Verified Role:** {role.mention}\n"
                 f"• **Verification Gate:** {target_channel.mention}\n"
-                f"• **Categories Protected:** `{categories_locked}` server categories locked to `@everyone`.\n"
+                f"• **Categories Locked:** `{categories_locked}`\n"
+                f"• **Channels Secured & Synced:** `{channels_locked}` channels hidden from unverified users!\n"
                 f"• **Existing Members Synced:** `{synced_members}` current members granted role.\n\n"
                 f"🔒 **How It Works Now:**\n"
-                f"1. New members joining see **ONLY** {target_channel.mention}. All chats, products & voice channels are completely invisible.\n"
-                f"2. Member clicks **Verify Member** button.\n"
-                f"3. Bot gives {role.mention} role instantly.\n"
-                f"4. {target_channel.mention} hides and **ALL** server channels unlock for them!"
+                f"1. New members joining see **ONLY** {target_channel.mention}. All chats, products, announcements & voice channels are completely invisible to them.\n"
+                f"2. When they click **Verify Member**, the bot grants them {role.mention} instantly.\n"
+                f"3. {target_channel.mention} disappears and **ALL** server channels unlock for them!"
+                f"{hierarchy_warning}"
             ),
             color=0x00FF88
         )
@@ -9674,6 +9719,155 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
     except Exception as e:
         logger.error(f"Error in autoverifysetup: {e}")
         await status_msg.edit(content=f"❌ **Error during automated setup:** `{e}`")
+
+
+@bot.tree.command(name="autoverifysetup", description="1-Click Complete Automated Verification Setup & Server Lockdown")
+@app_commands.describe(role="Role given upon verification (defaults to configured role)", target_channel="Verification channel (defaults to #verification)")
+async def autoverifysetup_slash(interaction: discord.Interaction, role: discord.Role = None, target_channel: discord.TextChannel = None):
+    if not has_admin_or_owner_access(interaction.user):
+        await interaction.response.send_message("❌ Only Administrators or Server Owner can run automated verification setup.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+    guild = interaction.guild
+    cfg = load_verification_config()
+
+    if not role:
+        role_id = cfg.get("role_id")
+        if role_id:
+            try:
+                role = guild.get_role(int(role_id))
+            except (ValueError, TypeError):
+                role = None
+        if not role:
+            for r in guild.roles:
+                if r.name.lower() in ["verify", "verified", "member", ".member", "@.gg/bytecorporation", ".gg/bytecorporation"]:
+                    role = r
+                    break
+    if not role:
+        await interaction.followup.send("❌ **Role Not Found:** Please specify the verified role, e.g.: `/autoverifysetup role:@Role`")
+        return
+
+    hierarchy_warning = ""
+    if guild.me.top_role <= role:
+        hierarchy_warning = (
+            f"\n\n⚠️ **IMPORTANT ROLE HIERARCHY NOTICE:**\n"
+            f"The bot's role (`{guild.me.top_role.name}`) is currently placed **BELOW** `{role.name}` in Server Settings > Roles!\n"
+            f"👉 Go to **Server Settings > Roles** and drag **`{guild.me.top_role.name}` ABOVE `{role.name}`** so the bot can assign the role when users click the button!"
+        )
+
+    if not target_channel:
+        ch_id = cfg.get("channel_id")
+        if ch_id:
+            try:
+                target_channel = guild.get_channel(int(ch_id))
+            except (ValueError, TypeError):
+                target_channel = None
+        if not target_channel:
+            for c in guild.text_channels:
+                if "veri" in c.name.lower():
+                    target_channel = c
+                    break
+    if not target_channel:
+        target_channel = interaction.channel
+
+    status_msg = await interaction.followup.send(f"⏳ **Locking down server & configuring Verification Gateway...**\n• Verified Role: {role.mention}\n• Verification Gate: {target_channel.mention}\n*Please wait while all categories and channels are secured...*")
+
+    cfg["enabled"] = True
+    cfg["role_id"] = role.id
+    cfg["channel_id"] = target_channel.id
+    save_verification_config(cfg)
+
+    staff_only_cat_names = ["logs", "zynrax logs", "zynrax automod", "keyauth", "keyauth and uid wl", "admin", "mod", "moderator", "staff"]
+
+    categories_locked = 0
+    channels_locked = 0
+    try:
+        await target_channel.set_permissions(guild.default_role, view_channel=True, send_messages=False, read_message_history=True)
+        await target_channel.set_permissions(role, view_channel=False)
+        await target_channel.set_permissions(guild.me, view_channel=True, send_messages=True, embed_links=True, manage_channels=True, manage_permissions=True)
+
+        for cat in guild.categories:
+            is_staff_only = any(term in cat.name.lower() for term in staff_only_cat_names)
+            await cat.set_permissions(guild.default_role, view_channel=False)
+            if not is_staff_only:
+                await cat.set_permissions(role, view_channel=True)
+            else:
+                await cat.set_permissions(role, view_channel=False)
+            categories_locked += 1
+
+            for ch in cat.channels:
+                if ch.id == target_channel.id:
+                    continue
+                try:
+                    await ch.edit(sync_permissions=True)
+                except Exception:
+                    try:
+                        await ch.set_permissions(guild.default_role, view_channel=False)
+                        if not is_staff_only:
+                            await ch.set_permissions(role, view_channel=True)
+                        else:
+                            await ch.set_permissions(role, view_channel=False)
+                    except Exception:
+                        pass
+                channels_locked += 1
+                await asyncio.sleep(0.1)
+
+            await asyncio.sleep(0.2)
+
+        for ch in guild.channels:
+            if ch.category is None and ch.id != target_channel.id:
+                is_staff_only = any(term in ch.name.lower() for term in staff_only_cat_names)
+                await ch.set_permissions(guild.default_role, view_channel=False)
+                if not is_staff_only:
+                    await ch.set_permissions(role, view_channel=True)
+                else:
+                    await ch.set_permissions(role, view_channel=False)
+                channels_locked += 1
+                await asyncio.sleep(0.15)
+
+        has_panel = False
+        async for m in target_channel.history(limit=10):
+            if m.author == guild.me and m.components:
+                has_panel = True
+                break
+        if not has_panel:
+            embed = build_verification_embed(guild)
+            view = ServerVerificationView()
+            await target_channel.send(embed=embed, view=view)
+
+        synced_members = 0
+        if guild.me.top_role > role:
+            for m in guild.members:
+                if not m.bot and role not in m.roles:
+                    try:
+                        await m.add_roles(role, reason="Auto-Verification Setup Member Sync")
+                        synced_members += 1
+                    except Exception:
+                        pass
+
+        embed_done = discord.Embed(
+            title="🛡️ Server Verification Gateway 100% Configured!",
+            description=(
+                f"✅ **Automated Security Active:**\n\n"
+                f"• **Verified Role:** {role.mention}\n"
+                f"• **Verification Gate:** {target_channel.mention}\n"
+                f"• **Categories Locked:** `{categories_locked}`\n"
+                f"• **Channels Secured & Synced:** `{channels_locked}` channels hidden from unverified users!\n"
+                f"• **Existing Members Synced:** `{synced_members}` current members granted role.\n\n"
+                f"🔒 **How It Works Now:**\n"
+                f"1. New members joining see **ONLY** {target_channel.mention}. All chats, products, announcements & voice channels are completely invisible to them.\n"
+                f"2. When they click **Verify Member**, the bot grants them {role.mention} instantly.\n"
+                f"3. {target_channel.mention} disappears and **ALL** server channels unlock for them!"
+                f"{hierarchy_warning}"
+            ),
+            color=0x00FF88
+        )
+        await status_msg.edit(content=None, embed=embed_done)
+    except Exception as e:
+        logger.error(f"Error in autoverifysetup slash: {e}")
+        await status_msg.edit(content=f"❌ **Error during automated setup:** `{e}`")
+
 
 
 @bot.command(name="verifyinfo")
