@@ -173,21 +173,30 @@ def save_user_cooldown(discord_id: int, dt: datetime):
 intents = discord.Intents.all()
 
 def get_active_lavalink_nodes() -> list[wavelink.Node]:
-    """Returns verified live 2026 Lavalink v4 & Nodelink nodes with automatic failover."""
+    """Returns verified live 2026 Lavalink v4 nodes with automatic failover."""
     return [
         wavelink.Node(
-            identifier="GDjkhp-UltraFast",
-            uri="https://nodelink.gdjkhp.com:443",
-            password="youshallnotpass",
+            identifier="Nazha-Global",
+            uri="https://lavalink.nazha.online:443",
+            password="nazhafreelava",
             heartbeat=15.0,
             retries=9999,
             resume_timeout=180,
             inactive_player_timeout=None
         ),
         wavelink.Node(
-            identifier="Nazha-Global",
-            uri="https://lavalink.nazha.online:443",
-            password="nazhafreelava",
+            identifier="Trinium-v4ssl",
+            uri="https://lavalink-v4.triniumhost.com:443",
+            password="free",
+            heartbeat=15.0,
+            retries=9999,
+            resume_timeout=180,
+            inactive_player_timeout=None
+        ),
+        wavelink.Node(
+            identifier="Trinium-v4",
+            uri="http://lavalink.triniumhost.com:4333",
+            password="free",
             heartbeat=15.0,
             retries=9999,
             resume_timeout=180,
@@ -651,7 +660,7 @@ async def on_ready():
     if AUTO_REMIND_ENABLED and not auto_schedule_task.is_running():
         try:
             auto_schedule_task.start()
-            logger.info(f"â° 48-Hour Auto Scheduler started! (Every {int(AUTO_REMIND_HOURS)} Hours)")
+            logger.info(f"⏰ 48-Hour Auto Scheduler started! (Every {int(AUTO_REMIND_HOURS)} Hours)")
         except Exception as e:
             logger.warning(f"Scheduler start skipped: {e}")
 
@@ -664,7 +673,7 @@ async def on_ready():
         await bot.change_presence(activity=init_act, status=discord.Status.online)
         if not rotate_status_task.is_running():
             rotate_status_task.start()
-            logger.info("âš¡ Bot Presence & Rotating Status Engine started!")
+            logger.info("⚡ Bot Presence & Rotating Status Engine started!")
     except Exception as e:
         logger.warning(f"Failed to set initial presence: {e}")
 
@@ -672,7 +681,7 @@ async def on_ready():
     if not lavalink_health_keeper.is_running():
         try:
             lavalink_health_keeper.start()
-            logger.info("âš¡ Lavalink Health Keeper started!")
+            logger.info("⚡ Lavalink Health Keeper started!")
         except Exception as e:
             logger.warning(f"Lavalink Health Keeper start error: {e}")
 
@@ -5323,129 +5332,232 @@ async def on_wavelink_track_start(payload: wavelink.TrackStartEventPayload):
                 logger.warning(f"Could not send now playing message: {e}")
 
 
+_vc_connect_locks: dict[int, asyncio.Lock] = {}
+_suppress_reconnect_until: dict[int, float] = {}
+_consecutive_reconnect_failures: dict[int, int] = {}
 _reconnecting_guilds: set[int] = set()
 _manual_disconnect_guilds: set[int] = set()
 
 
-async def ensure_voice_connection(channel: discord.VoiceChannel, text_channel: discord.abc.Messageable = None) -> wavelink.Player:
+class ByteMusicPlayer(wavelink.Player):
+    """
+    Resilient Wavelink Player that:
+    1. Prevents premature disconnect on single-node voice update errors.
+    2. Seamlessly switches to backup Lavalink nodes on voice update failure.
+    3. Handles 4014 / network blips cleanly without killing the music session.
+    """
+    async def _dispatch_voice_update(self) -> None:
+        assert self.guild is not None
+        data = self._voice_state.get("voice", {})
+
+        session_id = data.get("session_id", None)
+        token = data.get("token", None)
+        endpoint = data.get("endpoint", None)
+        channel_id = self._voice_state.get("channel_id", None)
+
+        if not session_id or not token or not endpoint:
+            return
+
+        request = {
+            "voice": {"sessionId": session_id, "token": token, "endpoint": endpoint, "channelId": channel_id}
+        }
+
+        # 1. Try currently assigned node
+        try:
+            await self.node._update_player(self.guild.id, data=request)
+            self._connected = True
+            self._connection_event.set()
+            return
+        except Exception as primary_err:
+            logger.warning(f"Voice update notice on primary Lavalink node '{getattr(self.node, 'identifier', 'Unknown')}': {primary_err}")
+
+        # 2. Immediate failover to other connected Lavalink nodes in pool
+        nodes_dict = getattr(wavelink.Pool, "nodes", {})
+        other_nodes = [
+            n for n in nodes_dict.values()
+            if n != self.node and getattr(n, "status", None) == wavelink.NodeStatus.CONNECTED
+        ]
+
+        for alt_node in other_nodes:
+            try:
+                self._node = alt_node
+                await self.node._update_player(self.guild.id, data=request)
+                self._connected = True
+                self._connection_event.set()
+                logger.info(f"⚡ Successfully recovered voice connection on Lavalink node: '{alt_node.identifier}'")
+                return
+            except Exception as alt_err:
+                logger.warning(f"Failover voice update failed on node '{alt_node.identifier}': {alt_err}")
+
+        # 3. Only if all nodes fail, disconnect
+        logger.error(f"All Lavalink nodes failed voice update for guild {self.guild.id}")
+        await self.disconnect()
+
+
+async def ensure_voice_connection(channel: discord.VoiceChannel, text_channel: discord.abc.Messageable = None) -> ByteMusicPlayer:
     """
     Connects to or re-uses the player in the specified voice channel.
-    Guarantees connection without hanging or crashing on timeouts.
+    Guarantees connection without race conditions, hanging, or join/leave loops.
     """
     guild = channel.guild
-    # Clear any manual disconnect mark so bot stays in VC
-    _manual_disconnect_guilds.discard(guild.id)
-    is_guild_247[guild.id] = True
-    if text_channel:
-        active_text_channels[guild.id] = text_channel.id
+    lock = _vc_connect_locks.setdefault(guild.id, asyncio.Lock())
 
-    # Check bot permissions
-    bot_perms = channel.permissions_for(guild.me)
-    if not bot_perms.connect:
-        raise discord.errors.DiscordException(f"Missing `Connect` permission in '{channel.name}'!")
-    if not bot_perms.speak:
-        raise discord.errors.DiscordException(f"Missing `Speak` permission in '{channel.name}'!")
+    async with lock:
+        # Suppress background auto-reconnect while this connection is active
+        _suppress_reconnect_until[guild.id] = time.time() + 10.0
+        _manual_disconnect_guilds.discard(guild.id)
+        if text_channel:
+            active_text_channels[guild.id] = text_channel.id
 
-    # Verify at least one node is connected in wavelink.Pool before attempting connection
-    nodes_dict = getattr(wavelink.Pool, "nodes", {})
-    has_connected = any(getattr(n, "status", None) == wavelink.NodeStatus.CONNECTED for n in nodes_dict.values())
-    if not has_connected:
-        logger.info("No connected node in pool! Attempting emergency node connection...")
-        await connect_lavalink_pool(bot)
-        await asyncio.sleep(1.5)
+        # Check bot permissions
+        bot_perms = channel.permissions_for(guild.me)
+        if not bot_perms.connect:
+            raise discord.errors.DiscordException(f"Missing `Connect` permission in '{channel.name}'!")
+        if not bot_perms.speak:
+            raise discord.errors.DiscordException(f"Missing `Speak` permission in '{channel.name}'!")
+
+        # Verify at least one node is connected in wavelink.Pool before attempting connection
         nodes_dict = getattr(wavelink.Pool, "nodes", {})
         has_connected = any(getattr(n, "status", None) == wavelink.NodeStatus.CONNECTED for n in nodes_dict.values())
         if not has_connected:
-            raise discord.errors.DiscordException("Audio server node is currently connecting. Please try again in 5 seconds.")
-
-    player: wavelink.Player = cast(wavelink.Player, guild.voice_client)
-
-    if player and getattr(player, "channel", None):
-        # Check if player node is alive; if dead/404, tear down and recreate
-        p_node = getattr(player, "node", None)
-        if not p_node or getattr(p_node, "status", None) != wavelink.NodeStatus.CONNECTED:
-            logger.info("Player node dead or session expired, rebuilding player...")
-            if guild.voice_client:
-                _manual_disconnect_guilds.add(guild.id)
-                try:
-                    await guild.voice_client.disconnect(force=True)
-                except Exception:
-                    pass
-                finally:
-                    _manual_disconnect_guilds.discard(guild.id)
-                await asyncio.sleep(0.5)
-            player = None
-        else:
-            if player.channel.id != channel.id:
-                await player.move_to(channel)
-            player.autoplay = wavelink.AutoPlayMode.disabled
-            return player
-
-    # If voice_client exists in half-connected state, safely tear down with disconnect loop suppression
-    if guild.voice_client:
-        try:
-            _manual_disconnect_guilds.add(guild.id)
-            await guild.voice_client.disconnect(force=True)
-        except Exception:
-            pass
-        finally:
-            _manual_disconnect_guilds.discard(guild.id)
-        await asyncio.sleep(0.5)
-
-    # Attempt connection with resilient timeout & clean retry
-    try:
-        player = await channel.connect(cls=wavelink.Player, self_deaf=True, timeout=20.0)
-        player.autoplay = wavelink.AutoPlayMode.disabled
-        try:
-            await player.set_volume(85)
-        except Exception:
-            pass
-        return player
-    except (wavelink.ChannelTimeoutException, asyncio.TimeoutError, wavelink.InvalidNodeException, Exception) as conn_err:
-        logger.warning(f"Voice connect initial error on '{channel.name}', retrying cleanly: {conn_err}")
-        try:
+            logger.info("No connected node in pool! Attempting emergency node connection...")
             await connect_lavalink_pool(bot)
-            if guild.voice_client:
-                _manual_disconnect_guilds.add(guild.id)
-                await guild.voice_client.disconnect(force=True)
-                _manual_disconnect_guilds.discard(guild.id)
             await asyncio.sleep(1.5)
-            player = await channel.connect(cls=wavelink.Player, self_deaf=True, timeout=25.0)
+            nodes_dict = getattr(wavelink.Pool, "nodes", {})
+            has_connected = any(getattr(n, "status", None) == wavelink.NodeStatus.CONNECTED for n in nodes_dict.values())
+            if not has_connected:
+                raise discord.errors.DiscordException("Audio server node is currently connecting. Please try again in 5 seconds.")
+
+        # Re-use existing healthy player if already in VC
+        existing_vc = guild.voice_client
+        if existing_vc and isinstance(existing_vc, wavelink.Player) and getattr(existing_vc, "channel", None):
+            p_node = getattr(existing_vc, "node", None)
+            if p_node and getattr(p_node, "status", None) == wavelink.NodeStatus.CONNECTED:
+                if existing_vc.channel.id != channel.id:
+                    await existing_vc.move_to(channel)
+                existing_vc.autoplay = wavelink.AutoPlayMode.disabled
+                is_guild_247[guild.id] = True
+                _consecutive_reconnect_failures[guild.id] = 0
+                _suppress_reconnect_until[guild.id] = 0
+                return cast(ByteMusicPlayer, existing_vc)
+
+        # Safely tear down any dead/half-connected voice client with suppression
+        if guild.voice_client:
+            _suppress_reconnect_until[guild.id] = time.time() + 8.0
+            try:
+                await guild.voice_client.disconnect(force=True)
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        # Attempt connection with primary pool selection
+        try:
+            player = await channel.connect(cls=ByteMusicPlayer, self_deaf=True, timeout=15.0)
             player.autoplay = wavelink.AutoPlayMode.disabled
             try:
                 await player.set_volume(85)
             except Exception:
                 pass
+            is_guild_247[guild.id] = True
+            _consecutive_reconnect_failures[guild.id] = 0
+            _suppress_reconnect_until[guild.id] = 0
             return player
-        except Exception as retry_err:
-            logger.error(f"Voice connect retry failed: {retry_err}")
-            raise discord.errors.DiscordException("Unable to connect to audio server. Please try again in 5 seconds.")
+        except Exception as conn_err:
+            logger.warning(f"Voice connect initial attempt failed on '{channel.name}': {conn_err}. Attempting node failover...")
+
+        # Multi-node failover: try each connected node in pool explicitly
+        await connect_lavalink_pool(bot)
+        nodes_dict = getattr(wavelink.Pool, "nodes", {})
+        connected_nodes = [n for n in nodes_dict.values() if getattr(n, "status", None) == wavelink.NodeStatus.CONNECTED]
+
+        last_err = None
+        for target_node in connected_nodes:
+            try:
+                if guild.voice_client:
+                    _suppress_reconnect_until[guild.id] = time.time() + 8.0
+                    try:
+                        await guild.voice_client.disconnect(force=True)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.5)
+
+                player = await channel.connect(cls=ByteMusicPlayer, self_deaf=True, timeout=15.0, nodes=[target_node])
+                player.autoplay = wavelink.AutoPlayMode.disabled
+                try:
+                    await player.set_volume(85)
+                except Exception:
+                    pass
+                is_guild_247[guild.id] = True
+                _consecutive_reconnect_failures[guild.id] = 0
+                _suppress_reconnect_until[guild.id] = 0
+                logger.info(f"Connected to '{channel.name}' via Lavalink node: {target_node.identifier}")
+                return player
+            except Exception as node_err:
+                last_err = node_err
+                logger.warning(f"Lavalink node failover connect failed on {target_node.identifier}: {node_err}")
+
+        _suppress_reconnect_until[guild.id] = time.time() + 15.0
+        logger.error(f"Voice connect failed completely on '{channel.name}': {last_err}")
+        raise discord.errors.DiscordException("Unable to connect to audio server. Please try again in 5 seconds.")
 
 
 async def _safe_reconnect_vc(channel: discord.VoiceChannel):
-    """Graceful single-attempt reconnect without recursive disconnect loops."""
-    guild_id = channel.guild.id
+    """Graceful reconnect with strict anti-loop protection."""
+    guild = channel.guild
+    guild_id = guild.id
+
     now = time.time()
-    if now - _last_reconnect_attempt.get(guild_id, 0) < 10.0:
+    # Check if suppressed
+    if now < _suppress_reconnect_until.get(guild_id, 0):
+        _reconnecting_guilds.discard(guild_id)
+        return
+
+    # Minimum 15s between reconnect attempts
+    if now - _last_reconnect_attempt.get(guild_id, 0) < 15.0:
+        _reconnecting_guilds.discard(guild_id)
         return
     _last_reconnect_attempt[guild_id] = now
+
+    # Check if 24/7 is enabled
+    if not is_guild_247.get(guild_id, False):
+        _reconnecting_guilds.discard(guild_id)
+        return
+
+    # Check failure count
+    failures = _consecutive_reconnect_failures.get(guild_id, 0)
+    if failures >= 2:
+        logger.warning(f"Stopping 24/7 reconnect loop for guild {guild.name} ({guild_id}) after 2 failed attempts.")
+        is_guild_247[guild_id] = False
+        _consecutive_reconnect_failures.pop(guild_id, None)
+        _reconnecting_guilds.discard(guild_id)
+        return
+
+    # Check if already back in VC
+    if guild.voice_client and getattr(guild.voice_client, "channel", None):
+        _reconnecting_guilds.discard(guild_id)
+        return
+
     # Skip reconnect if no Lavalink nodes are connected (prevents join/leave loop)
     nodes_dict = getattr(wavelink.Pool, 'nodes', {})
     if not any(getattr(n, 'status', None) == wavelink.NodeStatus.CONNECTED for n in nodes_dict.values()):
         logger.info('No active Lavalink node connected. Skipping auto-reconnect.')
+        _reconnecting_guilds.discard(guild_id)
         return
+
     try:
         await asyncio.sleep(2.0)
-        # Check if already back in VC
-        if channel.guild.voice_client and getattr(channel.guild.voice_client, "channel", None):
+        if guild.voice_client and getattr(guild.voice_client, "channel", None):
             return
 
         await ensure_voice_connection(channel)
-        logger.info(f"Auto-reconnected to Voice Channel: {channel.name}")
+        _consecutive_reconnect_failures[guild_id] = 0
+        logger.info(f"Auto-reconnected 24/7 to Voice Channel: {channel.name}")
     except Exception as e:
-        logger.warning(f"Auto-reconnect notice: {e}")
+        _consecutive_reconnect_failures[guild_id] = failures + 1
+        logger.warning(f"Auto-reconnect attempt failed for {channel.name}: {e}")
     finally:
         _reconnecting_guilds.discard(guild_id)
+
 
 
 async def advance_to_next_track(player: wavelink.Player, *, force_skip: bool = False, ended_track: wavelink.Playable = None) -> wavelink.Playable | None:
@@ -5580,15 +5692,20 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     guild_id = before.channel.guild.id
 
+    # If disconnection is suppressed (e.g. during manual command, teardown or reconnect attempt), ignore!
+    if time.time() < _suppress_reconnect_until.get(guild_id, 0):
+        return
+
     # If intentionally disconnected via leave/stop/disconnect command or button, stay disconnected!
     if guild_id in _manual_disconnect_guilds:
         _manual_disconnect_guilds.discard(guild_id)
         is_guild_247[guild_id] = False
+        _consecutive_reconnect_failures.pop(guild_id, None)
         return
 
-    # If 24/7 mode is not active, don't force reconnect
-    # Keep bot permanently in VC unless manually disconnected via *leave or button!
-    is_guild_247[guild_id] = True
+    # If 24/7 mode is not active for this guild, do NOT reconnect!
+    if not is_guild_247.get(guild_id, False):
+        return
 
     # If already in the middle of reconnecting for this guild, ignore!
     if guild_id in _reconnecting_guilds:
@@ -6081,7 +6198,9 @@ class MusicControlView(discord.ui.View):
     @discord.ui.button(emoji="👋", label="Leave", style=discord.ButtonStyle.danger, custom_id="mc_btn_leave", row=2)
     async def btn_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
         _manual_disconnect_guilds.add(interaction.guild_id)
+        _suppress_reconnect_until[interaction.guild_id] = time.time() + 10.0
         is_guild_247[interaction.guild_id] = False
+        _consecutive_reconnect_failures.pop(interaction.guild_id, None)
         player: wavelink.Player = cast(wavelink.Player, interaction.guild.voice_client)
         if player:
             player.queue.clear()
@@ -6135,7 +6254,7 @@ async def music_join_cmd(ctx):
         await ctx.reply(f"🔊 **Connected to `{channel.name}`!** 24/7 Mode active.")
     except Exception as e:
         logger.error(f"Voice connect error: {e}")
-        await ctx.reply(f"âŒ **Failed to connect to Voice Channel:** `{e}`")
+        await ctx.reply(f"❌ **Failed to connect to Voice Channel:** `{e}`")
         return
 
 
@@ -6147,7 +6266,9 @@ async def music_disconnect_cmd(ctx):
         await ctx.reply(f"🛡️ **Access Denied:** {reason}")
         return
     _manual_disconnect_guilds.add(ctx.guild.id)
+    _suppress_reconnect_until[ctx.guild.id] = time.time() + 10.0
     is_guild_247[ctx.guild.id] = False
+    _consecutive_reconnect_failures.pop(ctx.guild.id, None)
     player: wavelink.Player = cast(wavelink.Player, ctx.voice_client)
     if player:
         player.queue.clear()
@@ -6172,7 +6293,7 @@ async def music_play_cmd(ctx, *, query: str = None):
     try:
         player = await ensure_voice_connection(channel, ctx.channel)
     except Exception as e:
-        await ctx.reply(f"âŒ **Could not connect to Voice Channel:** `{e}`")
+        await ctx.reply(f"❌ **Could not connect to Voice Channel:** `{e}`")
         return
 
     player.current_requester = ctx.author
@@ -6334,11 +6455,11 @@ async def music_play_cmd(ctx, *, query: str = None):
                     await player.play(track)
                     await apply_guild_audio_filters(player, ctx.guild.id)
                 else:
-                    await searching_msg.edit(content=f"âŒ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
+                    await searching_msg.edit(content=f"❌ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
                     return
             except Exception as sc_err:
                 logger.error(f"SoundCloud fallback failed: {sc_err}")
-                await searching_msg.edit(content=f"âŒ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
+                await searching_msg.edit(content=f"❌ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
                 return
         embed = create_now_playing_embed(track, ctx.author, ctx.guild)
         view = MusicControlView()
@@ -6387,13 +6508,13 @@ async def music_playnow_cmd(ctx, *, query: str = None):
     channel = ctx.author.voice.channel
     allowed, reason = can_control_music(ctx.author, ctx.guild)
     if not allowed:
-        await ctx.reply(f"ðŸ›¡ï¸ **Access Denied:** {reason}")
+        await ctx.reply(f"🛡️ **Access Denied:** {reason}")
         return
 
     try:
         player = await ensure_voice_connection(channel, ctx.channel)
     except Exception as e:
-        await ctx.reply(f"âŒ **Could not connect to Voice Channel:** `{e}`")
+        await ctx.reply(f"❌ **Could not connect to Voice Channel:** `{e}`")
         return
 
     player.current_requester = ctx.author
@@ -6448,7 +6569,7 @@ async def music_playnow_cmd(ctx, *, query: str = None):
             finally:
                 _manual_disconnect_guilds.discard(ctx.guild.id)
             await asyncio.sleep(0.5)
-            player = await channel.connect(cls=wavelink.Player, self_deaf=True)
+            player = await ensure_voice_connection(channel)
             player.autoplay = wavelink.AutoPlayMode.disabled
             await player.play(track)
         else:
@@ -7441,7 +7562,7 @@ class ByteCustomTicketControlView(discord.ui.View):
             if claimed_name:
                 claimed_btn = discord.ui.Button(
                     label=f"Claimed by {claimed_name}"[:80],
-                    emoji=parse_custom_emoji(claim_cfg.get("claimed_emoji", "âœ…")),
+                    emoji=parse_custom_emoji(claim_cfg.get("claimed_emoji", "✅")),
                     style=discord.ButtonStyle.success,
                     disabled=True,
                     custom_id="btn_custom_ticket_claimed",
@@ -7451,7 +7572,7 @@ class ByteCustomTicketControlView(discord.ui.View):
 
                 unclaim_btn = discord.ui.Button(
                     label=unclaim_cfg.get("label", "Unclaim")[:80],
-                    emoji=parse_custom_emoji(unclaim_cfg.get("emoji", "ðŸ”„")),
+                    emoji=parse_custom_emoji(unclaim_cfg.get("emoji", "🔄")),
                     style=parse_button_style(unclaim_cfg.get("style", "secondary"), discord.ButtonStyle.secondary),
                     custom_id="btn_custom_ticket_unclaim",
                     row=1
@@ -7461,7 +7582,7 @@ class ByteCustomTicketControlView(discord.ui.View):
             else:
                 claim_btn = discord.ui.Button(
                     label=claim_cfg.get("label", "Claim")[:80],
-                    emoji=parse_custom_emoji(claim_cfg.get("emoji", "ðŸ™‹â€â™‚ï¸")),
+                    emoji=parse_custom_emoji(claim_cfg.get("emoji", "🙋‍♂️")),
                     style=parse_button_style(claim_cfg.get("style", "success"), discord.ButtonStyle.success),
                     custom_id="btn_custom_ticket_claim",
                     row=1
@@ -8122,7 +8243,7 @@ class TicketOptionBannerModal(discord.ui.Modal):
             else:
                 await interaction.followup.send(embed=embed_reply, ephemeral=True)
         else:
-            await interaction.followup.send(f"âŒ Option `{self.target_val}` not found.", ephemeral=True)
+            await interaction.followup.send(f"❌ Option `{self.target_val}` not found.", ephemeral=True)
 
 
 class TicketOptionBannerSelect(discord.ui.Select):
@@ -8130,7 +8251,7 @@ class TicketOptionBannerSelect(discord.ui.Select):
         opts = []
         for o in options_list[:25]:
             em = parse_custom_emoji(o.get("emoji"))
-            has_b = "🖼️ï¸ Has GIF/PNG" if o.get("banner_url") else "Default Banner"
+            has_b = "🖼️ Has GIF/PNG" if o.get("banner_url") else "Default Banner"
             opts.append(discord.SelectOption(
                 label=o.get("label", "Option")[:100],
                 value=o.get("value", "")[:100],
@@ -8145,7 +8266,7 @@ class TicketOptionBannerSelect(discord.ui.Select):
         sel_val = self.values[0]
         target_opt = next((o for o in opts if o.get("value") == sel_val), None)
         if not target_opt:
-            await interaction.response.send_message("âŒ Option not found.", ephemeral=True)
+            await interaction.response.send_message("❌ Option not found.", ephemeral=True)
             return
         await interaction.response.send_modal(TicketOptionBannerModal(target_opt))
 
@@ -8555,13 +8676,13 @@ async def setoptbanner_cmd(ctx, option_name: str = None, *, banner_url: str = No
       OR *setoptbanner <option> (with attached GIF/PNG file in Discord)
     """
     if not is_staff(ctx.author):
-        await ctx.reply("âŒ Only administrators or configured staff can set option banners.")
+        await ctx.reply("❌ Only administrators or configured staff can set option banners.")
         return
     if not option_name:
         await ctx.reply(
-            "ðŸ“Œ **Usage:** `*setoptbanner <option_name> <gif_or_png_url>`\n"
-            "ðŸ“Ž **Or attach a file:** Type `*setoptbanner <option_name>` and drag-and-drop your GIF/PNG into Discord!\n"
-            "âœ¨ *Example:* `*setoptbanner premium https://tenor.com/...gif` or `*setoptbanner brutal` (with file attached)"
+            "📌 **Usage:** `*setoptbanner <option_name> <gif_or_png_url>`\n"
+            "📎 **Or attach a file:** Type `*setoptbanner <option_name>` and drag-and-drop your GIF/PNG into Discord!\n"
+            "✨ *Example:* `*setoptbanner premium https://tenor.com/...gif` or `*setoptbanner brutal` (with file attached)"
         )
         return
 
@@ -8575,7 +8696,7 @@ async def setoptbanner_cmd(ctx, option_name: str = None, *, banner_url: str = No
             break
     if not target:
         avail = ", ".join(f"`{o.get('label')}`" for o in opts)
-        await ctx.reply(f"âŒ Option `{option_name}` not found. Available options:\n{avail}")
+        await ctx.reply(f"❌ Option `{option_name}` not found. Available options:\n{avail}")
         return
 
     source = None
@@ -8589,7 +8710,7 @@ async def setoptbanner_cmd(ctx, option_name: str = None, *, banner_url: str = No
             source = clean
 
     if source is None:
-        await ctx.reply("âŒ Please provide a GIF/PNG URL or attach an image/GIF file directly to your message!\nExample: `*setoptbanner premium https://...gif` or attach a file with `*setoptbanner premium`.")
+        await ctx.reply("❌ Please provide a GIF/PNG URL or attach an image/GIF file directly to your message!\nExample: `*setoptbanner premium https://...gif` or attach a file with `*setoptbanner premium`.")
         return
 
     saved_banner, is_local, status_note = await download_option_banner(source, target.get("value", q))
@@ -8597,12 +8718,12 @@ async def setoptbanner_cmd(ctx, option_name: str = None, *, banner_url: str = No
     save_ticket_config(cfg)
 
     embed = discord.Embed(
-        title=f"âœ… Banner Updated for {target.get('label')}!",
+        title=f"✅ Banner Updated for {target.get('label')}!",
         description=(
-            f"ðŸ–¼ï¸ **Banner:** `{saved_banner or '*Default Global Banner*'}`\n"
-            f"â„¹ï¸ **Status:** {status_note}\n\n"
-            f"âœ¨ *When someone opens a **{target.get('label')}** ticket, this GIF/PNG will now be displayed inside!*\n"
-            f"ðŸ’¡ *Tip: If you have an already-open ticket, type `*refreshticket` inside that ticket to see the new banner immediately!*"
+            f"🖼️ **Banner:** `{saved_banner or '*Default Global Banner*'}`\n"
+            f"ℹ️ **Status:** {status_note}\n\n"
+            f"✨ *When someone opens a **{target.get('label')}** ticket, this GIF/PNG will now be displayed inside!*\n"
+            f"💡 *Tip: If you have an already-open ticket, type `*refreshticket` inside that ticket to see the new banner immediately!*"
         ),
         color=0x0000FF
     )
@@ -8624,7 +8745,7 @@ async def setoptbanner_cmd(ctx, option_name: str = None, *, banner_url: str = No
 async def refreshticket_cmd(ctx):
     """Refreshes the welcome embed and banner of the current ticket channel using the latest ticket_config.json."""
     if not is_staff(ctx.author):
-        await ctx.reply("âŒ Only staff can refresh ticket settings.")
+        await ctx.reply("❌ Only staff can refresh ticket settings.")
         return
 
     cfg = load_ticket_config()
@@ -8676,7 +8797,7 @@ async def refreshticket_cmd(ctx):
     raw_title = tc.get("title_template") or opt_data.get("welcome_title") or "{panel} - Purchase Ticket"
     w_title = (
         raw_title.replace("{panel}", opt_data.get("label", "Support"))
-        .replace("{emoji}", opt_data.get("emoji", "ðŸª½"))
+        .replace("{emoji}", opt_data.get("emoji", "🪽"))
         .replace("{number}", f"{curr_counter:04d}")
         .replace("{user}", ticket_owner.name if ticket_owner else "Customer")
     )
@@ -8706,10 +8827,10 @@ async def refreshticket_cmd(ctx):
     )
 
     if tc.get("show_fields", True):
-        welcome_embed.add_field(name="ðŸ†” Ticket ID", value=f"`#{curr_counter:04d}`", inline=True)
-        welcome_embed.add_field(name="ðŸ‘¤ Created By", value=f"{ticket_owner.mention if ticket_owner else '@Customer'}", inline=True)
+        welcome_embed.add_field(name="🆔 Ticket ID", value=f"`#{curr_counter:04d}`", inline=True)
+        welcome_embed.add_field(name="👤 Created By", value=f"{ticket_owner.mention if ticket_owner else '@Customer'}", inline=True)
 
-    footer_text = tc.get("footer_text", "BYTE CORPORATION Security Shield â€¢ Click Close or Claim below")
+    footer_text = tc.get("footer_text", "BYTE CORPORATION Security Shield • Click Close or Claim below")
     welcome_embed.set_footer(text=footer_text)
 
     # Thumbnail
@@ -8762,19 +8883,19 @@ async def refreshticket_cmd(ctx):
         await ctx.message.delete()
     except Exception:
         pass
-    await ctx.send(f"âœ… **Ticket banner & welcome embed refreshed for `{panel_label}`!**", delete_after=5)
+    await ctx.send(f"✅ **Ticket banner & welcome embed refreshed for `{panel_label}`!**", delete_after=5)
 
 
 @bot.command(name="ticketoptions", aliases=["toptions", "listoptions"])
 async def ticketoptions_cmd(ctx):
     """Lists all configured ticket options with their emojis and custom GIF/PNG banners."""
     if not is_staff(ctx.author):
-        await ctx.reply("âŒ Only administrators or configured staff can view ticket options.")
+        await ctx.reply("❌ Only administrators or configured staff can view ticket options.")
         return
     cfg = load_ticket_config()
     opts = cfg.get("dropdown", {}).get("options", [])
     if not opts:
-        await ctx.reply("âš ï¸ No ticket options configured.")
+        await ctx.reply("⚠️ No ticket options configured.")
         return
     embed = discord.Embed(
         title="🎟️ Configured Ticket Options & Custom Banners",
@@ -11438,11 +11559,11 @@ async def restart_cmd(ctx):
     is_app_owner = await bot.is_owner(ctx.author)
     is_srv_owner = is_bot_owner_global(ctx.guild, ctx.author.id)
     if not (is_app_owner or is_srv_owner or ctx.author.guild_permissions.administrator):
-        await ctx.reply("âŒ **Access Denied:** Only Bot/Server Owner can restart the bot.")
+        await ctx.reply("❌ **Access Denied:** Only Bot/Server Owner can restart the bot.")
         return
 
     embed = discord.Embed(
-        title="ðŸ”„ Rebooting Bot...",
+        title="🔄 Rebooting Bot...",
         description="The bot is restarting now. It will be back online in 5-10 seconds!",
         color=0x2B2D31
     )
@@ -11458,7 +11579,7 @@ async def reload_cmd(ctx):
     is_app_owner = await bot.is_owner(ctx.author)
     is_srv_owner = is_bot_owner_global(ctx.guild, ctx.author.id)
     if not (is_app_owner or is_srv_owner or ctx.author.guild_permissions.administrator):
-        await ctx.reply("âŒ **Access Denied:** Only Bot/Server Owner can reload configurations.")
+        await ctx.reply("❌ **Access Denied:** Only Bot/Server Owner can reload configurations.")
         return
 
     reloaded = []
@@ -11486,8 +11607,8 @@ async def reload_cmd(ctx):
         pass
 
     embed = discord.Embed(
-        title="âœ… Configurations Reloaded Live!",
-        description="The following files were reloaded without restarting the bot:\nâ€¢ " + "\nâ€¢ ".join(reloaded),
+        title="✅ Configurations Reloaded Live!",
+        description="The following files were reloaded without restarting the bot:\n• " + "\n• ".join(reloaded),
         color=0x00FF88
     )
     await ctx.reply(embed=embed)
@@ -12933,7 +13054,7 @@ async def music_play_slash(interaction: discord.Interaction, query: str):
     try:
         player = await ensure_voice_connection(channel, interaction.channel)
     except Exception as e:
-        await interaction.edit_original_response(content=f"âŒ **Could not connect to Voice Channel:** `{e}`")
+        await interaction.edit_original_response(content=f"❌ **Could not connect to Voice Channel:** `{e}`")
         return
 
     player.current_requester = interaction.user
@@ -13045,11 +13166,11 @@ async def music_play_slash(interaction: discord.Interaction, query: str):
                     setattr(track, "requester", interaction.user)
                     await player.play(track)
                     await apply_guild_audio_filters(player, interaction.guild.id)
-                    await interaction.edit_original_response(content=f"âŒ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
+                    await interaction.edit_original_response(content=f"❌ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
                     return
             except Exception as sc_err:
                 logger.error(f"SoundCloud fallback failed: {sc_err}")
-                await interaction.edit_original_response(content=f"âŒ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
+                await interaction.edit_original_response(content=f"❌ **Audio Stream Error:** Failed to stream `{track.title}`. Please try another song.")
                 return
         embed = create_now_playing_embed(track, interaction.user, interaction.guild)
         view = MusicControlView()
@@ -13097,7 +13218,7 @@ async def music_playnow_slash(interaction: discord.Interaction, query: str):
     try:
         player = await ensure_voice_connection(channel, interaction.channel)
     except Exception as e:
-        await interaction.edit_original_response(content=f"âŒ **Could not connect to Voice Channel:** `{e}`")
+        await interaction.edit_original_response(content=f"❌ **Could not connect to Voice Channel:** `{e}`")
         return
 
     player.current_requester = interaction.user
@@ -13327,7 +13448,7 @@ async def music_join_slash(interaction: discord.Interaction):
         player = await ensure_voice_connection(channel, interaction.channel)
         await interaction.response.send_message(f"🔊 **Connected to `{channel.name}`!** 24/7 Mode active.")
     except Exception as e:
-        await interaction.response.send_message(f"âŒ **Failed to connect to Voice Channel:** `{e}`", ephemeral=True)
+        await interaction.response.send_message(f"❌ **Failed to connect to Voice Channel:** `{e}`", ephemeral=True)
 
 
 @bot.tree.command(name="disconnect", description="Disconnect the bot from voice channel")
