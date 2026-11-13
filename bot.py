@@ -128,11 +128,34 @@ def save_last_auto_run(dt: datetime):
         logger.error(f"Error saving last_auto_run.json: {e}")
 
 
-def is_bot_owner_global(guild: discord.Guild, user_id: int) -> bool:
-    """Returns True if user is the Server Owner."""
+def is_extra_owner(user_id: int) -> bool:
+    """Checks if a user is registered as an Extra Owner in antinuke_config.json."""
+    if not user_id:
+        return False
+    try:
+        cfg = load_antinuke_config()
+        extra_owners = cfg.get("extra_owners", [])
+        return user_id in extra_owners or str(user_id) in [str(x) for x in extra_owners]
+    except Exception:
+        return False
+
+
+def is_server_or_extra_owner(guild: discord.Guild, user_id: int) -> bool:
+    """Returns True ONLY for Server Owner or Extra Owner (Excludes regular Administrators)."""
     if not guild or not user_id:
         return False
-    return user_id == guild.owner_id
+    if user_id == guild.owner_id:
+        return True
+    return is_extra_owner(user_id)
+
+
+def is_bot_owner_global(guild: discord.Guild, user_id: int) -> bool:
+    """Returns True if user is the Server Owner or Extra Owner."""
+    if not guild or not user_id:
+        return False
+    if user_id == guild.owner_id:
+        return True
+    return is_extra_owner(user_id)
 
 
 def has_admin_or_owner_access(member: discord.Member) -> bool:
@@ -580,7 +603,7 @@ async def rotate_status_task():
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    """Automatically syncs slash commands when invited to a new server like 1520327813121704056."""
+    """Automatically syncs slash commands and sends VOID Security welcome embed."""
     logger.info(f"✨ Bot added to new guild: {guild.name} (ID: {guild.id})")
     try:
         bot.tree.copy_global_to(guild=guild)
@@ -588,6 +611,28 @@ async def on_guild_join(guild: discord.Guild):
         logger.info(f"⚡ Synced slash commands to newly joined guild: {guild.name} ({guild.id})")
     except Exception as e:
         logger.warning(f"Could not sync slash commands to new guild {guild.id}: {e}")
+
+    try:
+        cfg = load_antinuke_config()
+        embed = build_void_welcome_embed(guild, guild.owner, cfg)
+        support_link = cfg.get("support_url", "https://discord.gg/uaDzFDtFSe")
+        bot_name = cfg.get("bot_name") or (bot.user.name if bot.user else "Bot")
+        bot_invite = cfg.get("invite_url") or (discord.utils.oauth_url(bot.user.id, permissions=discord.Permissions(administrator=True)) if bot.user else None)
+        view = VoidSecurityActivationView(support_url=support_link, invite_url=bot_invite, bot_name=bot_name)
+
+        target_ch = guild.system_channel
+        if not target_ch or not target_ch.permissions_for(guild.me).send_messages:
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    target_ch = ch
+                    break
+
+        if target_ch:
+            await target_ch.send(embed=embed, view=view)
+        elif guild.owner:
+            await guild.owner.send(embed=embed, view=view)
+    except Exception as e:
+        logger.warning(f"Could not send VOID welcome greeting to guild {guild.id}: {e}")
 
 
 _ready_executed = False
@@ -620,16 +665,17 @@ async def on_ready():
     global _ready_executed
     logger.info(f"🤖 Bot Logged In: {bot.user} (ID: {bot.user.id})")
 
-    # Deduplicate slash commands: Clear guild-scoped overrides so only single global slash commands appear in '/' popup!
+    # Instant Guild Slash Command Sync: Makes all commands appear in '/' popup instantly without waiting hours!
     for g in bot.guilds:
         try:
-            bot.tree.clear_commands(guild=g)
+            bot.tree.copy_global_to(guild=g)
             await bot.tree.sync(guild=g)
+            logger.info(f"⚡ Instantly synced slash commands to guild: {g.name} ({g.id})")
         except Exception as e:
-            logger.debug(f"Guild clear notice for {g.id}: {e}")
+            logger.debug(f"Guild sync notice for {g.id}: {e}")
     try:
         synced = await bot.tree.sync()
-        logger.info(f"⚡ Synced {len(synced)} global slash commands without duplicates!")
+        logger.info(f"⚡ Synced {len(synced)} global slash commands successfully!")
     except Exception as e:
         logger.warning(f"Global slash sync error: {e}")
 
@@ -669,6 +715,24 @@ async def on_ready():
             logger.info("⚡ Lavalink Health Keeper started!")
         except Exception as e:
             logger.warning(f"Lavalink Health Keeper start error: {e}")
+
+    # Start Giveaway System & restore persistent views
+    try:
+        g_data = load_giveaways()
+        active_gws = [k for k, v in g_data.get("giveaways", {}).items() if not v.get("ended", False)]
+        for gw_id in active_gws:
+            bot.add_view(GiveawayEntryView(int(gw_id)))
+        if active_gws:
+            logger.info(f"🎁 Restored {len(active_gws)} active Giveaway interactive view(s)!")
+    except Exception as e:
+        logger.warning(f"Error restoring giveaway views: {e}")
+
+    if not giveaway_timer_task.is_running():
+        try:
+            giveaway_timer_task.start()
+            logger.info("🎁 Giveaway Timer Task started (Every 10s)!")
+        except Exception as e:
+            logger.warning(f"Error starting giveaway timer: {e}")
 
     logger.info("BYTE CORPORATION BOT (Feedback + UID Whitelist) IS FULLY ONLINE!")
 
@@ -1539,10 +1603,9 @@ def build_panel_embed(guild: discord.Guild = None) -> discord.Embed:
         "BYTE CORPORATION Security Shield",
     ]
     embed.description = "\n".join(desc_lines)
-    if guild and guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    elif bot.user and bot.user.display_avatar:
-        embed.set_thumbnail(url=bot.user.display_avatar.url)
+    logo_url = cfg.get("logo_url") or (bot.user.display_avatar.url if (bot.user and bot.user.display_avatar) else (guild.icon.url if (guild and guild.icon) else None))
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
     embed.set_footer(text="BYTE CORPORATION Security Shield")
     return embed
 
@@ -9536,6 +9599,39 @@ async def setverifyrole_slash(interaction: discord.Interaction, role: discord.Ro
     await interaction.response.send_message(f"✅ **Verified Member Role updated to:** {role.mention}\n*Members clicking Verify Member will automatically receive this role.*", ephemeral=True)
 
 
+
+def is_staff_or_private_entity(entity) -> bool:
+    """
+    Accurately detects if a channel or category is staff/admin/mod/logs/sensitive,
+    handling unicode fonts, emojis, special characters, and abbreviations.
+    """
+    import unicodedata
+    name = getattr(entity, "name", "")
+    norm_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii").lower()
+    raw_lower = name.lower()
+
+    sensitive_terms = [
+        "log", "logs", "mod", "moderator", "admin", "administrator", "staff",
+        "zynrax", "automod", "keyauth", "audit", "secret", "private", "reseller",
+        "ticket-log", "transcript", "transcripts", "whitelist", "wl-log", "dev",
+        "developer", "owner", "management", "internal", "bot-cmd", "bot-command",
+        "bot-log", "hidden", "security"
+    ]
+
+    for term in sensitive_terms:
+        if term in raw_lower or term in norm_name:
+            return True
+
+    if hasattr(entity, "category") and entity.category:
+        cat_raw = entity.category.name.lower()
+        cat_norm = unicodedata.normalize("NFKD", entity.category.name).encode("ascii", "ignore").decode("ascii").lower()
+        for term in sensitive_terms:
+            if term in cat_raw or term in cat_norm:
+                return True
+
+    return False
+
+
 @bot.command(name="autoverifysetup", aliases=["quickverifysetup", "setupverify", "setupverification", "lockdownverification", "fixverification", "lockdownserver"])
 async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: discord.TextChannel = None):
     """
@@ -9605,8 +9701,6 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
     cfg["channel_id"] = target_channel.id
     save_verification_config(cfg)
 
-    staff_only_cat_names = ["logs", "zynrax logs", "zynrax automod", "keyauth", "keyauth and uid wl", "admin", "mod", "moderator", "staff"]
-
     categories_locked = 0
     channels_locked = 0
     try:
@@ -9615,51 +9709,58 @@ async def autoverifysetup_cmd(ctx, role: discord.Role = None, target_channel: di
         await target_channel.set_permissions(role, view_channel=False)
         await target_channel.set_permissions(ctx.guild.me, view_channel=True, send_messages=True, embed_links=True, manage_channels=True, manage_permissions=True)
 
-        # B. Lockdown all categories & synchronize child channels
+        # B. Lockdown all categories & protect private channels
         for cat in ctx.guild.categories:
-            is_staff_only = any(term in cat.name.lower() for term in staff_only_cat_names)
-            # Deny @everyone view channel
+            is_cat_private = is_staff_or_private_entity(cat)
+            # Deny @everyone view channel on all categories
             await cat.set_permissions(ctx.guild.default_role, view_channel=False)
-            if not is_staff_only:
-                # Allow verified role view channel
-                await cat.set_permissions(role, view_channel=True)
-            else:
-                # Staff-only categories remain hidden from verified normal members
+            if is_cat_private:
+                # Private/Staff categories are 100% hidden from verified normal members too!
                 await cat.set_permissions(role, view_channel=False)
+            else:
+                # Public categories allow verified members
+                await cat.set_permissions(role, view_channel=True)
             categories_locked += 1
 
-            # Sync and lock every channel inside this category so explicit @everyone allow is deleted
+            # Process every child channel
             for ch in cat.channels:
                 if ch.id == target_channel.id:
                     continue
-                try:
-                    # Sync permissions with category
-                    await ch.edit(sync_permissions=True)
-                except Exception:
+                ch_is_private = is_cat_private or is_staff_or_private_entity(ch)
+                if ch_is_private:
+                    # PRIVATE CHANNEL: NEVER SYNC WITH PUBLIC CATEGORY!
+                    # Explicitly deny both @everyone and verified members
                     try:
                         await ch.set_permissions(ctx.guild.default_role, view_channel=False)
-                        if not is_staff_only:
-                            await ch.set_permissions(role, view_channel=True)
-                        else:
-                            await ch.set_permissions(role, view_channel=False)
+                        await ch.set_permissions(role, view_channel=False)
                     except Exception:
                         pass
+                else:
+                    # PUBLIC CHANNEL: Sync with category so @everyone is denied and verified role is allowed
+                    try:
+                        await ch.edit(sync_permissions=True)
+                    except Exception:
+                        try:
+                            await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+                            await ch.set_permissions(role, view_channel=True)
+                        except Exception:
+                            pass
                 channels_locked += 1
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.08)
 
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.15)
 
         # C. Lockdown standalone channels (channels without a category)
         for ch in ctx.guild.channels:
             if ch.category is None and ch.id != target_channel.id:
-                is_staff_only = any(term in ch.name.lower() for term in staff_only_cat_names)
+                ch_is_private = is_staff_or_private_entity(ch)
                 await ch.set_permissions(ctx.guild.default_role, view_channel=False)
-                if not is_staff_only:
-                    await ch.set_permissions(role, view_channel=True)
-                else:
+                if ch_is_private:
                     await ch.set_permissions(role, view_channel=False)
+                else:
+                    await ch.set_permissions(role, view_channel=True)
                 channels_locked += 1
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.1)
 
         # D. Post panel in verification channel if not present
         has_panel = False
@@ -9763,8 +9864,6 @@ async def autoverifysetup_slash(interaction: discord.Interaction, role: discord.
     cfg["channel_id"] = target_channel.id
     save_verification_config(cfg)
 
-    staff_only_cat_names = ["logs", "zynrax logs", "zynrax automod", "keyauth", "keyauth and uid wl", "admin", "mod", "moderator", "staff"]
-
     categories_locked = 0
     channels_locked = 0
     try:
@@ -9773,43 +9872,48 @@ async def autoverifysetup_slash(interaction: discord.Interaction, role: discord.
         await target_channel.set_permissions(guild.me, view_channel=True, send_messages=True, embed_links=True, manage_channels=True, manage_permissions=True)
 
         for cat in guild.categories:
-            is_staff_only = any(term in cat.name.lower() for term in staff_only_cat_names)
+            is_cat_private = is_staff_or_private_entity(cat)
             await cat.set_permissions(guild.default_role, view_channel=False)
-            if not is_staff_only:
-                await cat.set_permissions(role, view_channel=True)
-            else:
+            if is_cat_private:
                 await cat.set_permissions(role, view_channel=False)
+            else:
+                await cat.set_permissions(role, view_channel=True)
             categories_locked += 1
 
             for ch in cat.channels:
                 if ch.id == target_channel.id:
                     continue
-                try:
-                    await ch.edit(sync_permissions=True)
-                except Exception:
+                ch_is_private = is_cat_private or is_staff_or_private_entity(ch)
+                if ch_is_private:
                     try:
                         await ch.set_permissions(guild.default_role, view_channel=False)
-                        if not is_staff_only:
-                            await ch.set_permissions(role, view_channel=True)
-                        else:
-                            await ch.set_permissions(role, view_channel=False)
+                        await ch.set_permissions(role, view_channel=False)
                     except Exception:
                         pass
+                else:
+                    try:
+                        await ch.edit(sync_permissions=True)
+                    except Exception:
+                        try:
+                            await ch.set_permissions(guild.default_role, view_channel=False)
+                            await ch.set_permissions(role, view_channel=True)
+                        except Exception:
+                            pass
                 channels_locked += 1
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.08)
 
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.15)
 
         for ch in guild.channels:
             if ch.category is None and ch.id != target_channel.id:
-                is_staff_only = any(term in ch.name.lower() for term in staff_only_cat_names)
+                ch_is_private = is_staff_or_private_entity(ch)
                 await ch.set_permissions(guild.default_role, view_channel=False)
-                if not is_staff_only:
-                    await ch.set_permissions(role, view_channel=True)
-                else:
+                if ch_is_private:
                     await ch.set_permissions(role, view_channel=False)
+                else:
+                    await ch.set_permissions(role, view_channel=True)
                 channels_locked += 1
-                await asyncio.sleep(0.15)
+                await asyncio.sleep(0.1)
 
         has_panel = False
         async for m in target_channel.history(limit=10):
@@ -9853,6 +9957,189 @@ async def autoverifysetup_slash(interaction: discord.Interaction, role: discord.
         logger.error(f"Error in autoverifysetup slash: {e}")
         await status_msg.edit(content=f"❌ **Error during automated setup:** `{e}`")
 
+
+
+
+@bot.command(name="hideprivate", aliases=["secureprivate", "lockprivate", "fixprivate"])
+async def hideprivate_cmd(ctx):
+    """
+    Instantly scans and locks all staff, moderator, logs, and private channels
+    from verified members (@.gg/bytecorporation) and @everyone.
+    """
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("❌ Only an **Administrator** or **Server Owner** can run this command.")
+        return
+
+    cfg = load_verification_config()
+    role = None
+    role_id = cfg.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(int(role_id))
+    if not role:
+        for r in ctx.guild.roles:
+            if r.name.lower() in ["verify", "verified", "member", ".member", "@.gg/bytecorporation", ".gg/bytecorporation"]:
+                role = r
+                break
+
+    msg = await ctx.reply("🔒 **Scanning and locking all private & staff channels...**")
+
+    secured_categories = []
+    secured_channels = []
+
+    # 1. Lock all private categories and their channels
+    for cat in ctx.guild.categories:
+        if is_staff_or_private_entity(cat):
+            try:
+                await cat.set_permissions(ctx.guild.default_role, view_channel=False)
+                if role:
+                    await cat.set_permissions(role, view_channel=False)
+                secured_categories.append(cat.name)
+            except Exception:
+                pass
+
+            for ch in cat.channels:
+                try:
+                    await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+                    if role:
+                        await ch.set_permissions(role, view_channel=False)
+                    secured_channels.append(ch.name)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.06)
+
+    # 2. Lock any standalone or individual channels that are private
+    for ch in ctx.guild.channels:
+        if ch.name in secured_channels:
+            continue
+        if is_staff_or_private_entity(ch):
+            try:
+                await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+                if role:
+                    await ch.set_permissions(role, view_channel=False)
+                secured_channels.append(ch.name)
+            except Exception:
+                pass
+            await asyncio.sleep(0.06)
+
+    role_mention = role.mention if role else "`Verified Role`"
+    cat_summary = "\n".join([f"• 📁 `{c}`" for c in secured_categories[:12]]) or "None detected"
+    ch_summary = "\n".join([f"• 🔒 `{c}`" for c in secured_channels[:20]]) or "None detected"
+
+    embed = discord.Embed(
+        title="🔒 Private Channels Successfully Locked!",
+        description=(
+            f"All staff, moderator, automod, and log channels are now **100% hidden** from {role_mention} and `@everyone`!\n\n"
+            f"**Categories Secured ({len(secured_categories)}):**\n{cat_summary}\n\n"
+            f"**Channels Secured ({len(secured_channels)}):**\n{ch_summary}\n\n"
+            f"🛡️ *Only Server Administrators and authorized Staff roles can view these channels now.*"
+        ),
+        color=0x00FF88
+    )
+    await msg.edit(content=None, embed=embed)
+
+
+@bot.command(name="hidechannel", aliases=["hide", "lockchannel"])
+async def hidechannel_cmd(ctx, target: discord.abc.GuildChannel = None):
+    """
+    Hides a specific channel from verified members and @everyone.
+    Usage: `*hidechannel #moderator-only` or run inside the channel.
+    """
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("❌ Only an **Administrator** can run this command.")
+        return
+
+    target = target or ctx.channel
+    cfg = load_verification_config()
+    role = None
+    role_id = cfg.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(int(role_id))
+    if not role:
+        for r in ctx.guild.roles:
+            if r.name.lower() in ["verify", "verified", "member", ".member", "@.gg/bytecorporation", ".gg/bytecorporation"]:
+                role = r
+                break
+
+    await target.set_permissions(ctx.guild.default_role, view_channel=False)
+    if role:
+        await target.set_permissions(role, view_channel=False)
+
+    await ctx.reply(f"🔒 Channel {target.mention} is now **100% hidden** from verified normal members and `@everyone`!")
+
+
+@bot.command(name="hidecategory", aliases=["lockcategory"])
+async def hidecategory_cmd(ctx, *, category_name: str):
+    """
+    Hides an entire category and all channels inside it from verified members and @everyone.
+    Usage: `*hidecategory logs`
+    """
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("❌ Only an **Administrator** can run this command.")
+        return
+
+    cat = None
+    for c in ctx.guild.categories:
+        if category_name.lower() in c.name.lower():
+            cat = c
+            break
+
+    if not cat:
+        await ctx.reply(f"❌ Category matching `{category_name}` not found.")
+        return
+
+    cfg = load_verification_config()
+    role = None
+    role_id = cfg.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(int(role_id))
+    if not role:
+        for r in ctx.guild.roles:
+            if r.name.lower() in ["verify", "verified", "member", ".member", "@.gg/bytecorporation", ".gg/bytecorporation"]:
+                role = r
+                break
+
+    await cat.set_permissions(ctx.guild.default_role, view_channel=False)
+    if role:
+        await cat.set_permissions(role, view_channel=False)
+
+    count = 0
+    for ch in cat.channels:
+        await ch.set_permissions(ctx.guild.default_role, view_channel=False)
+        if role:
+            await ch.set_permissions(role, view_channel=False)
+        count += 1
+        await asyncio.sleep(0.06)
+
+    await ctx.reply(f"🔒 Category **{cat.name}** and `{count}` child channels are now **100% hidden** from verified normal members and `@everyone`!")
+
+
+@bot.command(name="showchannel", aliases=["unhidechannel", "unlockchannel"])
+async def showchannel_cmd(ctx, target: discord.abc.GuildChannel = None):
+    """
+    Makes a specific channel visible to verified members.
+    Usage: `*showchannel #general`
+    """
+    if not has_admin_or_owner_access(ctx.author):
+        await ctx.reply("❌ Only an **Administrator** can run this command.")
+        return
+
+    target = target or ctx.channel
+    cfg = load_verification_config()
+    role = None
+    role_id = cfg.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(int(role_id))
+    if not role:
+        for r in ctx.guild.roles:
+            if r.name.lower() in ["verify", "verified", "member", ".member", "@.gg/bytecorporation", ".gg/bytecorporation"]:
+                role = r
+                break
+
+    await target.set_permissions(ctx.guild.default_role, view_channel=False)
+    if role:
+        await target.set_permissions(role, view_channel=True)
+
+    await ctx.reply(f"✅ Channel {target.mention} is now **visible** to verified members!")
 
 
 @bot.command(name="verifyinfo")
@@ -11189,9 +11476,9 @@ def get_home_page_data():
     client_id = bot.user.id if bot.user else "1393529322895048705"
     bot_name = bot.user.name if bot.user else "SpyDerMan\u2020"
     invite_url = f"https://discord.com/oauth2/authorize?client_id={client_id}&permissions=8&scope=bot%20applications.commands"
-    support_url = "https://discord.gg/w5Qvp66KC"
-    website_url = "https://discord.gg/w5Qvp66KC"
-    total_cmds = (len(bot.commands) + len(bot.tree.get_commands())) if hasattr(bot, "commands") else 149
+    support_url = "https://discord.gg/uaDzFDtFSe"
+    website_url = "https://discord.gg/uaDzFDtFSe"
+    total_cmds = (len(bot.commands) + len(bot.tree.get_commands())) if hasattr(bot, "commands") else 168
 
     return {
         "id": "home",
@@ -11204,16 +11491,18 @@ def get_home_page_data():
             "\u2022 **My Prefix is** *\n"
             f"\u2022 **Total Commands:** {total_cmds}\n"
             "\u2022 **Choose a Specific Module of your Desire**\n"
-            ">>> \U0001F4CB \u2003\u00BB\u2002 Whitelist\n"
-            "\U0001F511 \u2003\u00BB\u2002 KeyAuth\n"
-            "\U0001F3AB \u2003\u00BB\u2002 Ticket\n"
-            "\U0001F4DD \u2003\u00BB\u2002 Feedback\n"
-            "\U0001F6E1 \u2003\u00BB\u2002 Verification\n"
-            "\U0001F44B \u2003\u00BB\u2002 Welcomer\n"
-            "\U0001F3B5 \u2003\u00BB\u2002 Music\n"
-            "\U0001F50A \u2003\u00BB\u2002 VoiceMaster\n"
-            "\u2699\uFE0F \u2003\u00BB\u2002 Utility\n"
-            "\U0001F504 \u2003\u00BB\u2002 System\n\n"
+            ">>> <a:emoji_31:1523222455823499344> Security & Anti-Nuke\n"
+            "<a:emoji_31:1523222455823499344> Giveaway\n"
+            "<a:emoji_31:1523222455823499344> Whitelist\n"
+            "<a:emoji_31:1523222455823499344> KeyAuth\n"
+            "<a:emoji_31:1523222455823499344> Ticket\n"
+            "<a:emoji_31:1523222455823499344> Feedback\n"
+            "<a:emoji_31:1523222455823499344> Verification\n"
+            "<a:emoji_31:1523222455823499344> Welcomer\n"
+            "<a:emoji_31:1523222455823499344> Music\n"
+            "<a:emoji_31:1523222455823499344> VoiceMaster\n"
+            "<a:emoji_31:1523222455823499344> Utility\n"
+            "<a:emoji_31:1523222455823499344> System\n\n"
             "\U0001F517 **Links**\n"
             f"[Invite Me]({invite_url}) | [Support Server]({support_url}) | [Website]({website_url})"
         )
@@ -11229,11 +11518,61 @@ ZYNRAX_PAGES = [
         "desc": ""
     },
     {
+        "id": "security",
+        "label": "Security",
+        "emoji": "<a:emoji_31:1523222455823499344>",
+        "select_desc": "Anti-Nuke, Whitelist, Extra Owner & Raid Protection",
+        "title": "<a:emoji_31:1523222455823499344> Anti-Nuke & Server Protection System",
+        "desc": (
+            "__Security & Anti-Nuke Commands__\n"
+            "*antinuke » Open Security & Setup Panel\n"
+            "*antinuke enable » Turn ON all 24 protection modules\n"
+            "*antinuke disable » Temporarily turn protection OFF\n"
+            "*antinuke status » View live active modules & immune staff\n"
+            "*antinuke log <#channel> » Set security alert log channel\n"
+            "*antinuke settimeout <mins> » Set timeout for links & pings (default 10m)\n"
+            "*antinuke allowchannel <#channel> » Whitelist a channel for links\n"
+            "*antinuke setemoji <wine/snow/shield/bullet> <emoji> » Set custom or animated emoji\n"
+            "*antinuke setlogo <url> » Set top-right thumbnail logo\n"
+            "*antinuke edit » Open live interactive modal editor\n\n"
+            "__Ownership & Whitelist (Server Owner & Extra Owner Only)__\n"
+            "*extraowner add <@user> » Promote trusted member to Extra Owner\n"
+            "*extraowner remove <@user> » Revoke Extra Owner permissions\n"
+            "*extraowner list » List all Server & Extra Owners\n"
+            "*wl add <@user> » Open interactive 25-module Whitelist panel\n"
+            "*wl remove <@user> » Revoke whitelist permissions\n"
+            "*wl list » View all whitelisted staff members\n\n"
+            "__Emergency Lockdown__\n"
+            "*lock » Lock current or all channels during active raid\n"
+            "*unlock » Unlock channels after raid is cleared"
+        )
+    },
+    {
+        "id": "giveaway",
+        "label": "Giveaway",
+        "emoji": "<a:emoji_31:1523222455823499344>",
+        "select_desc": "Giveaways with Animated Emoji Buttons",
+        "title": "<a:emoji_31:1523222455823499344> Interactive Giveaway System",
+        "desc": (
+            "__Giveaway Commands__\n"
+            "*gstart <duration> <winners> <prize> \u00BB Start interactive giveaway (e.g. *gstart 1h 1w 1 mont)\n"
+            "*gend <msg_id> \u00BB End a giveaway immediately & pick winners\n"
+            "*greroll <msg_id> \u00BB Reroll a new random winner\n"
+            "*glist \u00BB View all active giveaways in this server\n\n"
+            "__Animated Emoji & Style Customization__\n"
+            "*gsetemoji button <emoji> \u00BB Set Entry button emoji (supports animated <a:name:id>)\n"
+            "*gsetemoji bullet <emoji> \u00BB Set embed bullet point emoji\n"
+            "*gsetemoji color <#hex> \u00BB Set giveaway embed color (#00D9FF)\n"
+            "*gsetemoji reset \u00BB Reset to default cyan theme\n\n"
+            "*Supports animated emojis: `<a:emoji_name:id>`*"
+        )
+    },
+    {
         "id": "whitelist",
         "label": "Whitelist",
-        "emoji": "\U0001F4CB",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "UID Whitelist Management & Panels",
-        "title": "\U0001F4CB \u00BB UID Whitelist & License System",
+        "title": "<a:emoji_31:1523222455823499344> UID Whitelist & License System",
         "desc": (
             "__Commands__\n"
             "*panel (or /panel) \u00BB Open In-Discord UID Whitelist Panel\n"
@@ -11250,9 +11589,9 @@ ZYNRAX_PAGES = [
     {
         "id": "keyauth",
         "label": "KeyAuth",
-        "emoji": "\U0001F511",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "License Generation & Reseller Management",
-        "title": "\U0001F511 \u00BB KeyAuth & Reseller Management",
+        "title": "<a:emoji_31:1523222455823499344> KeyAuth & Reseller Management",
         "desc": (
             "__Commands__\n"
             "*keypanel (or /keypanel) \u00BB Post KeyAuth / Reseller Bot Control Panel\n"
@@ -11274,9 +11613,9 @@ ZYNRAX_PAGES = [
     {
         "id": "ticket",
         "label": "Ticket",
-        "emoji": "\U0001F3AB",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Support Tickets, Modals, Claim & AutoPay",
-        "title": "\U0001F3AB \u00BB Interactive Ticket & AutoPay System",
+        "title": "<a:emoji_31:1523222455823499344> Interactive Ticket & AutoPay System",
         "desc": (
             "__Commands__\n"
             "*ticketpanel (or /ticketpanel) \u00BB Post official BYTE CORPORATION Ticket Panel\n"
@@ -11295,9 +11634,9 @@ ZYNRAX_PAGES = [
     {
         "id": "feedback",
         "label": "Feedback",
-        "emoji": "\U0001F4DD",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Automated Feedback DMs & Reminders",
-        "title": "\U0001F4DD \u00BB Feedback Reminder & Warning System",
+        "title": "<a:emoji_31:1523222455823499344> Feedback Reminder & Warning System",
         "desc": (
             "__Commands__\n"
             "*send (or *remind) \u00BB Send feedback warning DM to customer role\n"
@@ -11313,9 +11652,9 @@ ZYNRAX_PAGES = [
     {
         "id": "verification",
         "label": "Verification",
-        "emoji": "\U0001F6E1",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Server Member Verification System",
-        "title": "\U0001F6E1 \u00BB Server Verification System",
+        "title": "<a:emoji_31:1523222455823499344> Server Verification System",
         "desc": (
             "__Commands__\n"
             "*autoverifysetup \u00BB 1-Click interactive Verification Setup\n"
@@ -11327,9 +11666,9 @@ ZYNRAX_PAGES = [
     {
         "id": "welcomer",
         "label": "Welcomer",
-        "emoji": "\U0001F44B",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Custom Welcome DM & Server Announcements",
-        "title": "\U0001F44B \u00BB Customizable Welcome System",
+        "title": "<a:emoji_31:1523222455823499344> Customizable Welcome System",
         "desc": (
             "__Welcome DM Commands__\n"
             "*welcomedm (or /welcomedm) \u00BB Open interactive Welcome DM editor\n"
@@ -11344,9 +11683,9 @@ ZYNRAX_PAGES = [
     {
         "id": "music",
         "label": "Music",
-        "emoji": "\U0001F3B5",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Lavalink v4 High Fidelity Music & 24/7 VC",
-        "title": "\U0001F3B5 \u00BB High Fidelity Music Suite (Lavalink v4)",
+        "title": "<a:emoji_31:1523222455823499344> High Fidelity Music Suite (Lavalink v4)",
         "desc": (
             "__Playback Commands__\n"
             "*play <song/url> (or /play) \u00BB Play any song or playlist in Voice Channel\n"
@@ -11365,9 +11704,9 @@ ZYNRAX_PAGES = [
     {
         "id": "voicemaster",
         "label": "VoiceMaster",
-        "emoji": "\U0001F50A",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Join to Create Temporary Voice Channels",
-        "title": "\U0001F50A \u00BB VoiceMaster Temporary Channels",
+        "title": "<a:emoji_31:1523222455823499344> VoiceMaster Temporary Channels",
         "desc": (
             "__Commands__\n"
             "*vmpanel \u00BB Post Join-to-Create VoiceMaster channel setup panel\n\n"
@@ -11380,9 +11719,9 @@ ZYNRAX_PAGES = [
     {
         "id": "utility",
         "label": "Utility",
-        "emoji": "\u2699",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "User Avatars, Banners, Announcements & Tools",
-        "title": "\u2699 \u00BB Utility & Server Information",
+        "title": "<a:emoji_31:1523222455823499344> Utility & Server Information",
         "desc": (
             "__Commands__\n"
             "*avatar [@user] (or /avatar) \u00BB View high-res avatar with download links\n"
@@ -11398,9 +11737,9 @@ ZYNRAX_PAGES = [
     {
         "id": "system",
         "label": "System",
-        "emoji": "\U0001F504",
+        "emoji": "<a:emoji_31:1523222455823499344>",
         "select_desc": "Online Bot Updates & Control",
-        "title": "\U0001F504 \u00BB Bot System & Updates",
+        "title": "<a:emoji_31:1523222455823499344> Bot System & Updates",
         "desc": (
             "__Commands__\n"
             "*update \u00BB 1-Click online bot update from GitHub\n"
@@ -11626,6 +11965,32 @@ async def update_cmd(ctx, mode: str = "git", *, arg: str = None):
             with open(current_path, "w", encoding="utf-8") as f:
                 f.write(new_code)
 
+            if "bot.py" in target_url:
+                config_url = target_url.replace("bot.py", "antinuke_config.json")
+                try:
+                    async with session.get(config_url, timeout=aiohttp.ClientTimeout(total=10)) as cresp:
+                        if cresp.status == 200:
+                            c_text = await cresp.text(encoding="utf-8")
+                            json.loads(c_text)
+                            antinuke_path = os.path.join(os.path.dirname(current_path), "antinuke_config.json")
+                            with open(antinuke_path, "w", encoding="utf-8") as cf:
+                                cf.write(c_text)
+                except Exception:
+                    pass
+
+                gw_url = target_url.replace("bot.py", "giveaways.json")
+                try:
+                    async with session.get(gw_url, timeout=aiohttp.ClientTimeout(total=10)) as gresp:
+                        if gresp.status == 200:
+                            g_text = await gresp.text(encoding="utf-8")
+                            json.loads(g_text)
+                            gw_path = os.path.join(os.path.dirname(current_path), "giveaways.json")
+                            if not os.path.exists(gw_path):
+                                with open(gw_path, "w", encoding="utf-8") as gf:
+                                    gf.write(g_text)
+                except Exception:
+                    pass
+
             embed = discord.Embed(
                 title="🚀 Online Update Installed!",
                 description="New code successfully downloaded and verified!\n🔄 **Restarting bot now... Please wait 5-10 seconds!**",
@@ -11810,6 +12175,115 @@ async def on_message(message: discord.Message):
     if not message.guild or message.author.bot:
         await bot.process_commands(message)
         return
+
+    cfg = load_antinuke_config()
+    is_sec_enabled = cfg.get("enabled", True)
+
+    # 1. VOID Security: Anti-Everyone / Anti-Here Ping Protection (TIMEOUT, NOT BAN)
+    if is_sec_enabled and ("@everyone" in message.content or "@here" in message.content):
+        perm_needed = "everyone_ping" if "@everyone" in message.content else "here_ping"
+        is_immune = (
+            message.author.id == message.guild.owner_id or
+            is_extra_owner(message.author.id) or
+            is_antinuke_whitelisted(message.guild, message.author, perm_needed)
+        )
+        if not is_immune:
+            try:
+                await message.delete()
+            except Exception as e:
+                logger.warning(f"Could not delete mass ping message: {e}")
+
+            timeout_mins = cfg.get("anti_everyone", {}).get("timeout_minutes", 5)
+            timeout_applied = False
+
+            member = message.author
+            if not isinstance(member, discord.Member):
+                member = message.guild.get_member(message.author.id)
+            if not member:
+                try:
+                    member = await message.guild.fetch_member(message.author.id)
+                except Exception:
+                    member = message.author
+
+            if isinstance(member, discord.Member) and member.id != message.guild.owner_id:
+                bot_member = message.guild.me
+                if bot_member.guild_permissions.moderate_members or bot_member.guild_permissions.administrator:
+                    if bot_member.top_role > member.top_role:
+                        try:
+                            until = discord.utils.utcnow() + timedelta(minutes=timeout_mins)
+                            await member.timeout(until, reason="Automod: Mass Mention")
+                            timeout_applied = True
+                        except Exception as e:
+                            logger.warning(f"Failed to timeout {member} for mass ping: {e}")
+                            try:
+                                await member.timeout(timedelta(minutes=timeout_mins), reason="Automod: Mass Mention")
+                                timeout_applied = True
+                            except Exception as e2:
+                                logger.error(f"Fallback timeout also failed for {member.id}: {e2}")
+                    else:
+                        logger.warning(f"[Anti-Everyone] Cannot timeout {member} ({member.id}) - Bot top role <= user top role")
+                else:
+                    logger.warning(f"[Anti-Everyone] Bot lacks moderate_members permission in {message.guild.name}")
+
+            ping_type = "@everyone" if "@everyone" in message.content else "@here"
+            action_str = f"Muted for {timeout_mins} minutes" if timeout_applied else "Message Deleted"
+            await send_automod_log(message.guild, "Anti-Everyone", message.author, message.channel, action_str, f"Automod: Mass Mention ({ping_type})")
+            return
+
+    # 2. VOID Security: Anti-Link Protection (TIMEOUT, NOT BAN)
+    link_regex = re.compile(r"(https?://\S+|www\.\S+|discord\.gg/\S+|discord\.com/invite/\S+|t\.me/\S+|bit\.ly/\S+)", re.IGNORECASE)
+    if is_sec_enabled and link_regex.search(message.content):
+        # Check immunity: Server Owner, Extra Owners, Whitelisted
+        is_immune = (
+            message.author.id == message.guild.owner_id or
+            is_extra_owner(message.author.id) or
+            is_antinuke_whitelisted(message.guild, message.author, "anti_link")
+        )
+        allowed_channels = cfg.get("anti_link", {}).get("allowed_channels", [])
+        if message.channel.id in allowed_channels or message.channel.name.lower() in ["promo", "self-promo", "promotion"]:
+            is_immune = True
+
+        if not is_immune:
+            try:
+                await message.delete()
+            except Exception as e:
+                logger.warning(f"Could not delete link message: {e}")
+
+            timeout_mins = cfg.get("anti_link", {}).get("timeout_minutes", 5)
+            timeout_applied = False
+
+            member = message.author
+            if not isinstance(member, discord.Member):
+                member = message.guild.get_member(message.author.id)
+            if not member:
+                try:
+                    member = await message.guild.fetch_member(message.author.id)
+                except Exception:
+                    member = message.author
+
+            if isinstance(member, discord.Member) and member.id != message.guild.owner_id:
+                bot_member = message.guild.me
+                if bot_member.guild_permissions.moderate_members or bot_member.guild_permissions.administrator:
+                    if bot_member.top_role > member.top_role:
+                        try:
+                            until = discord.utils.utcnow() + timedelta(minutes=timeout_mins)
+                            await member.timeout(until, reason="Automod: Posted a link")
+                            timeout_applied = True
+                        except Exception as e:
+                            logger.warning(f"Failed to timeout {member} for link: {e}")
+                            try:
+                                await member.timeout(timedelta(minutes=timeout_mins), reason="Automod: Posted a link")
+                                timeout_applied = True
+                            except Exception as e2:
+                                logger.error(f"Fallback timeout also failed for {member.id}: {e2}")
+                    else:
+                        logger.warning(f"[Anti-Link] Cannot timeout {member} ({member.id}) - Bot top role <= user top role")
+                else:
+                    logger.warning(f"[Anti-Link] Bot lacks moderate_members permission in {message.guild.name}")
+
+            action_str = f"Muted for {timeout_mins} minutes" if timeout_applied else "Message Deleted"
+            await send_automod_log(message.guild, "Anti-Link", message.author, message.channel, action_str, "Automod: Posted a link")
+            return
 
     await bot.process_commands(message)
 
@@ -12344,6 +12818,23 @@ async def on_member_join(member: discord.Member):
     1. Personalized Direct Message (DM) to newly joined member
     2. Server Welcome Message & Embed to configured Welcome Channel
     """
+    # --- BYTE SECURITY ANTI-BOT ADD PROTECTION ---
+    if member.bot:
+        cfg = load_antinuke_config()
+        if cfg.get("enabled", True) and cfg.get("modules", {}).get("bot_add", True):
+            entry = await get_audit_entry(member.guild, discord.AuditLogAction.bot_add, target_id=member.id, max_age=15.0)
+            if entry and entry.user:
+                if not is_antinuke_whitelisted(member.guild, entry.user, "bot_add"):
+                    try:
+                        await member.ban(reason=f"[VOID Security Anti-Nuke] Unauthorized Bot Added by {entry.user.name}")
+                    except Exception:
+                        try:
+                            await member.kick(reason="[VOID Security Anti-Nuke] Unauthorized Bot")
+                        except Exception:
+                            pass
+                    await punish_antinuke_offender(member.guild, entry.user, f"Added unauthorized bot @{member.name} ({member.id})", "Anti-Bot Add")
+                    return
+
     # --- AUTO-BYPASS VERIFICATION FOR BOTS ADDED BY ADMIN / OWNER ---
     if member.bot:
         try:
@@ -13655,6 +14146,2183 @@ async def music_247_slash(interaction: discord.Interaction):
     is_guild_247[interaction.guild.id] = not current
     status = "ENABLED (Permanent VC Stay)" if is_guild_247[interaction.guild.id] else "DISABLED (Auto-leave when idle)"
     await interaction.response.send_message(f"🛡️ **24/7 Mode:** `{status}`")
+
+
+
+# ==============================================================================
+# BYTE CORPORATION — ADVANCED SERVER PROTECTION & ANTI-NUKE SECURITY SYSTEM
+# Matches exact VOID Security System UI & 24 Protection Modules
+# ImGUI: Red Accent, Clean Spacing, Multi-Select Permission Dropdown & Action Buttons
+# ==============================================================================
+
+ANTINUKE_CONFIG_PATH = os.path.join(BASE_DIR, "antinuke_config.json")
+
+ANTINUKE_MODULES_LIST = [
+    ("ban", "Anti-Ban"),
+    ("kick", "Anti-Kick"),
+    ("unban", "Anti-Unban"),
+    ("bot_add", "Anti-Bot Add"),
+    ("member_role_update", "Anti-Member Role Update"),
+    ("member_update", "Anti-Member Update"),
+    ("emoji_action", "Anti-Emoji Action"),
+    ("sticker_action", "Anti-Sticker Action"),
+    ("message_delete", "Anti-Message Delete"),
+    ("everyone_ping", "Anti-Everyone Ping"),
+    ("here_ping", "Anti-Here Ping"),
+    ("channel_create", "Anti-Channel Create"),
+    ("channel_delete", "Anti-Channel Delete"),
+    ("channel_update", "Anti-Channel Update"),
+    ("role_create", "Anti-Role Create"),
+    ("role_delete", "Anti-Role Delete"),
+    ("role_update", "Anti-Role Update"),
+    ("webhook_create", "Anti-Webhook Create"),
+    ("webhook_delete", "Anti-Webhook Delete"),
+    ("webhook_update", "Anti-Webhook Update"),
+    ("guild_update", "Anti-Guild Update"),
+    ("integration_add", "Anti-Integration Add"),
+    ("integration_update", "Anti-Integration Update"),
+    ("integration_delete", "Anti-Integration Delete"),
+    ("onboarding", "Anti-Onboarding")
+]
+
+def resolve_custom_emoji(client: discord.Client, emoji_input: str) -> str:
+    """Intelligently resolves any emoji input (raw tag, shortcode, or name) into Discord format."""
+    if not emoji_input:
+        return ""
+    clean = emoji_input.strip()
+    if re.match(r"^<(a?):([a-zA-Z0-9_]+):([0-9]+)>$", clean):
+        return clean
+    name_clean = clean.strip(":")
+    if client and getattr(client, "emojis", None):
+        found = discord.utils.get(client.emojis, name=name_clean)
+        if found:
+            return str(found)
+    return clean
+
+def load_antinuke_config() -> dict:
+    if os.path.exists(ANTINUKE_CONFIG_PATH):
+        try:
+            with open(ANTINUKE_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "enabled": True,
+        "punishment": "ban",
+        "log_channel_id": None,
+        "whitelisted_users": {},
+        "modules": {k: True for k, _ in ANTINUKE_MODULES_LIST}
+    }
+
+def save_antinuke_config(cfg: dict):
+    try:
+        with open(ANTINUKE_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving antinuke config: {e}")
+
+def is_antinuke_whitelisted(guild: discord.Guild, user: discord.User | discord.Member, action: str = None) -> bool:
+    """Checks if a user is immune from anti-nuke actions."""
+    if not user:
+        return False
+    if guild and user.id == guild.owner_id:
+        return True
+    if bot.user and user.id == bot.user.id:
+        return True
+    if is_extra_owner(user.id):
+        return True
+
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True):
+        return True
+
+    whitelisted = cfg.get("whitelisted_users", {})
+    user_entry = whitelisted.get(str(user.id))
+    if not user_entry:
+        return False
+    if user_entry.get("all", False):
+        return True
+    if action and action in user_entry.get("permissions", []):
+        return True
+    return False
+
+async def get_audit_entry(guild: discord.Guild, action: discord.AuditLogAction, target_id: int = None, max_age: float = 12.0):
+    """Fetches recent audit log entry for security validation."""
+    try:
+        async for entry in guild.audit_logs(action=action, limit=6):
+            age = (discord.utils.utcnow() - entry.created_at).total_seconds()
+            if age > max_age:
+                continue
+            if target_id is not None:
+                if getattr(entry.target, "id", None) == target_id:
+                    return entry
+            else:
+                return entry
+    except Exception:
+        pass
+    return None
+
+async def punish_antinuke_offender(guild: discord.Guild, offender: discord.User | discord.Member, reason: str, module_name: str):
+    """Executes punishment (ban/kick/role strip) on unauthorized admin/user and sends log."""
+    if not offender or not guild:
+        return
+    if offender.id == guild.owner_id or (bot.user and offender.id == bot.user.id):
+        return
+
+    cfg = load_antinuke_config()
+    punishment = cfg.get("punishment", "ban").lower()
+    applied = "None"
+
+    if isinstance(offender, discord.Member):
+        if guild.me.top_role > offender.top_role:
+            if punishment == "ban":
+                try:
+                    await guild.ban(offender, reason=f"[VOID Security Anti-Nuke] {reason}", delete_message_days=1)
+                    applied = "Banned"
+                except Exception:
+                    pass
+            elif punishment == "kick":
+                try:
+                    await guild.kick(offender, reason=f"[VOID Security Anti-Nuke] {reason}")
+                    applied = "Kicked"
+                except Exception:
+                    pass
+        if applied == "None":
+            # Strip dangerous roles if ban failed due to role hierarchy
+            dangerous_roles = [
+                r for r in offender.roles
+                if r.permissions.administrator or r.permissions.ban_members or
+                   r.permissions.manage_channels or r.permissions.manage_roles or
+                   r.permissions.manage_guild
+            ]
+            if dangerous_roles:
+                try:
+                    await offender.remove_roles(*dangerous_roles, reason=f"[VOID Security] {reason}")
+                    applied = "Admin Roles Stripped"
+                except Exception:
+                    pass
+    else:
+        try:
+            await guild.ban(offender, reason=f"[VOID Security Anti-Nuke] {reason}", delete_message_days=1)
+            applied = "Banned"
+        except Exception:
+            pass
+
+    # Send Security Alert Log
+    await send_antinuke_security_log(guild, module_name, offender, reason, applied)
+
+async def send_antinuke_security_log(guild: discord.Guild, module_name: str, offender: discord.User | discord.Member, details: str, punishment: str):
+    """Sends a professional security alert embed to the configured security log channel."""
+    cfg = load_antinuke_config()
+    log_ch_id = cfg.get("log_channel_id")
+    ch = guild.get_channel(int(log_ch_id)) if log_ch_id else None
+    if not ch:
+        for c in guild.text_channels:
+            if any(k in c.name.lower() for k in ["security-log", "antinuke-log", "mod-log", "logs"]):
+                ch = c
+                break
+    if not ch:
+        return
+
+    embed = discord.Embed(
+        title="🚨 VOID Security — Anti-Nuke Attack Blocked!",
+        description=(
+            f"**Action Module:** `{module_name}`\n"
+            f"**Offender:** {offender.mention} (`{offender.id}`)\n"
+            f"**Details:** {details}\n"
+            f"**Punishment:** `{punishment}`\n"
+            f"**Protection Status:** 🛡️ Server State Guarded & Restored"
+        ),
+        color=0x0055FF,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.set_footer(text="VOID Security System • Bulletproof Shield", icon_url=guild.icon.url if guild.icon else None)
+    try:
+        await ch.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def send_automod_log(guild: discord.Guild, module_title: str, offender: discord.User | discord.Member, channel: discord.abc.GuildChannel, action_text: str, reason_text: str):
+    """Sends the exact Automod log embed matching user screenshot to the log channel (and alerts in channel)."""
+    cfg = load_antinuke_config()
+    log_ch_id = cfg.get("log_channel_id")
+    target_log_channel = guild.get_channel(int(log_ch_id)) if (log_ch_id and str(log_ch_id).isdigit()) else None
+    if not target_log_channel:
+        for c in guild.text_channels:
+            if any(k in c.name.lower() for k in ["automod-log", "automod", "security-log", "antinuke-log", "mod-log", "logs"]):
+                target_log_channel = c
+                break
+
+    # Build the exact Automod Embed matching screenshot
+    embed = discord.Embed(
+        title=f"Automod Log: {module_title}",
+        color=0x2B2D31
+    )
+    if offender and hasattr(offender, "display_avatar"):
+        embed.set_thumbnail(url=offender.display_avatar.url)
+
+    # Field 1: User
+    embed.add_field(name="User", value=f"{offender.name} ({offender.id})", inline=False)
+
+    # Field 2: Action
+    embed.add_field(name="Action", value=action_text, inline=False)
+
+    # Field 3: Channel
+    ch_val = channel.mention if hasattr(channel, "mention") else f"#{channel.name}"
+    embed.add_field(name="Channel", value=ch_val, inline=False)
+
+    # Field 4: Reason
+    embed.add_field(name="Reason", value=reason_text, inline=False)
+
+    # Footer: User ID: <id> • DD/MM/YYYY HH:MM
+    now_str = discord.utils.utcnow().strftime("%d/%m/%Y %H:%M")
+    embed.set_footer(text=f"User ID: {offender.id} • {now_str}")
+
+    # 1. Send to dedicated log channel if available
+    if target_log_channel:
+        try:
+            await target_log_channel.send(embed=embed)
+        except Exception as e:
+            logger.warning(f"Could not send automod log to {target_log_channel.name}: {e}")
+
+    # 2. Also send alert embed in current channel (delete_after=15 to notify while keeping chat clean)
+    if channel and channel != target_log_channel:
+        try:
+            await channel.send(embed=embed, delete_after=15)
+        except Exception as e:
+            logger.warning(f"Could not send automod alert in channel {channel.name}: {e}")
+    elif not target_log_channel and channel:
+        try:
+            await channel.send(embed=embed)
+        except Exception as e:
+            logger.warning(f"Could not send fallback automod in channel {channel.name}: {e}")
+
+
+def get_embed_color_from_config(cfg: dict) -> int:
+    raw_col = cfg.get("embed", {}).get("color", "#0055FF").strip().lower()
+    color_map = {
+        "blue": 0x0055FF, "royal_blue": 0x0055FF, "discord_blue": 0x5865F2,
+        "cyan": 0x00D9FF, "purple": 0x9B59B6, "red": 0xED4245,
+        "green": 0x57F287, "yellow": 0xFEE75C, "gold": 0xF1C40F,
+        "dark": 0x2B2D31, "black": 0x1E1F22, "white": 0xFFFFFF
+    }
+    if raw_col in color_map:
+        return color_map[raw_col]
+    clean_hex = raw_col.replace("#", "").replace("0x", "")
+    try:
+        return int(clean_hex, 16)
+    except Exception:
+        return 0x0055FF
+
+def build_antinuke_whitelist_embed(guild: discord.Guild, target_user: discord.User | discord.Member, permissions_granted: list[str], is_all: bool) -> discord.Embed:
+    """Builds the exact VOID/SpyDerMan Security dark embed matching Image 3 layout."""
+    cfg = load_antinuke_config()
+    embed_cfg = cfg.get("embed", {})
+
+    embed_color = get_embed_color_from_config(cfg)
+    embed = discord.Embed(color=embed_color)
+
+    bot_name = cfg.get("bot_name") or (bot.user.name if bot.user else "SpyDerMan")
+    raw_title = embed_cfg.get("title", "").strip()
+    title_text = raw_title if raw_title else f"👑 {bot_name} Security System"
+    subtitle_text = embed_cfg.get("subtitle", "🔴 Advanced Server Protection Module")
+    bullet_symbol = embed_cfg.get("bullet_emoji", "»").strip()
+    raw_footer = embed_cfg.get("footer", "").strip()
+    footer_text = raw_footer if raw_footer else f"Powered By {bot_name} Security System™"
+    custom_desc = embed_cfg.get("custom_description", "").strip()
+
+    embed.title = title_text
+
+    module_lines = "\n".join([f"{bullet_symbol} {name}" for _, name in ANTINUKE_MODULES_LIST])
+
+    if is_all:
+        user_status = "All Permissions Whitelisted"
+    elif permissions_granted:
+        user_status = f"{len(permissions_granted)} Permissions Whitelisted"
+    else:
+        user_status = "Not Whitelisted"
+
+    extra_desc = f"\n\n{custom_desc}" if custom_desc else ""
+
+    # Exact matching Image 3: Clean spacing, no squeezing thumbnail, plain User: and clean footer
+    embed.description = (
+        f"{subtitle_text}\n\n"
+        f"{module_lines}\n\n"
+        f"-----------------------\n"
+        f"User: {target_user.mention} — [ `{user_status}` ]"
+        f"{extra_desc}\n\n"
+        f"{footer_text}"
+    )
+    return embed
+
+
+
+class VoidSecurityActivationView(discord.ui.View):
+    def __init__(self, support_url: str = "https://discord.gg/uaDzFDtFSe", invite_url: str = None, bot_name: str = None):
+        super().__init__(timeout=None)
+        support_url = support_url or "https://discord.gg/uaDzFDtFSe"
+        self.add_item(discord.ui.Button(label="Join Support Server", url=support_url, style=discord.ButtonStyle.link))
+        if invite_url:
+            name_str = bot_name or (bot.user.name if bot.user else "Bot")
+            self.add_item(discord.ui.Button(label=f"Invite {name_str}", url=invite_url, style=discord.ButtonStyle.link))
+
+
+def build_void_welcome_embed(guild: discord.Guild, target_user: discord.Member = None, cfg: dict = None) -> discord.Embed:
+    """Builds the exact bot greeting / setup embed matching the Aegis UI."""
+    if cfg is None:
+        cfg = load_antinuke_config()
+
+    w_cfg = cfg.get("welcome_embed", {})
+    color = get_embed_color_from_config(cfg)
+
+    # Dynamic Bot Name (uses real Discord name, e.g. SpyDerMan)
+    bot_name = cfg.get("bot_name") or (bot.user.display_name if bot.user else (bot.user.name if bot.user else "SpyDerMan"))
+
+    shield_ico = w_cfg.get("shield_emoji", "🛡️")
+    wine_ico = w_cfg.get("greeting_emoji", "🍷")
+    snow_ico = w_cfg.get("server_emoji", "❄️")
+    bullet_ico = w_cfg.get("bullet_emoji", "›")
+    
+    custom_title = w_cfg.get("title", "").strip()
+    title_text = custom_title if custom_title else f"{shield_ico} Thank you for adding {bot_name}!"
+
+    owner_user = target_user or (guild.owner if guild else None)
+    owner_mention = owner_user.mention if owner_user else "@Owner"
+    guild_name = guild.name if guild else "Server"
+
+    custom_body = w_cfg.get("body_text", "").strip()
+    body_text = custom_body if custom_body else f"{bot_name} provides maximum server protection, Join-to-Create voice channels, auto-moderation, and bulletproof security."
+
+    support_url = cfg.get("support_url", "https://discord.gg/uaDzFDtFSe")
+    prefix = "*"
+
+    desc = (
+        f"Hello {owner_mention} {wine_ico}!\n\n"
+        f"Thank you for adding **{bot_name}** to **{guild_name}** {snow_ico}!\n\n"
+        f"{body_text}\n\n"
+        f"{bullet_ico} **Default Prefix:** `{prefix}`\n"
+        f"{bullet_ico} **Get Help:** Type `{prefix}help` or `/help`\n"
+        f"{bullet_ico} **Setup Anti-Nuke:** Type `{prefix}antinuke enable` or `/antinuke enable`\n"
+        f"{bullet_ico} **Support Server:** [Click to Join Support Server]({support_url})\n\n"
+        f"Please join our support server for quick updates, setup assistance, and notifications!"
+    )
+
+    embed = discord.Embed(title=title_text, description=desc, color=color)
+
+    # Set Bot Logo on top-right thumbnail
+    logo_url = cfg.get("logo_url") or (bot.user.display_avatar.url if (bot.user and bot.user.display_avatar) else None)
+    if logo_url:
+        embed.set_thumbnail(url=logo_url)
+    elif guild and guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+
+    custom_footer = w_cfg.get("footer_text", "").strip()
+    footer_text = custom_footer if custom_footer else f"{bot_name} Security • Meet the Shield"
+    time_str = discord.utils.utcnow().strftime("%H:%M")
+    embed.set_footer(text=f"{footer_text} | Today at {time_str}")
+    return embed
+
+
+class VoidSecurityEditModal(discord.ui.Modal, title="🎨 Customize VOID Security Panel"):
+    def __init__(self):
+        super().__init__()
+        cfg = load_antinuke_config()
+        ecfg = cfg.get("embed", {})
+
+        bot_name = cfg.get("bot_name") or (bot.user.name if bot.user else "SpyDerMan")
+        self.title_input = discord.ui.TextInput(
+            label="Panel Title",
+            default=ecfg.get("title", f"👑 {bot_name} Security System"),
+            max_length=100,
+            required=True
+        )
+        self.subtitle_input = discord.ui.TextInput(
+            label="Subtitle / Status Line",
+            default=ecfg.get("subtitle", "🔴 Advanced Server Protection Module"),
+            max_length=100,
+            required=True
+        )
+        self.bullet_input = discord.ui.TextInput(
+            label="Module Bullet Emoji (Animated Supported!)",
+            default=ecfg.get("bullet_emoji", "»"),
+            max_length=100,
+            required=True
+        )
+        self.color_input = discord.ui.TextInput(
+            label="Embed Color (#0055FF, blue, cyan, red)",
+            default=ecfg.get("color", "#0055FF"),
+            max_length=30,
+            required=True
+        )
+        self.footer_input = discord.ui.TextInput(
+            label="Footer Text",
+            default=ecfg.get("footer", f"Powered By {bot_name} Security System™"),
+            max_length=100,
+            required=True
+        )
+
+        self.add_item(self.title_input)
+        self.add_item(self.subtitle_input)
+        self.add_item(self.bullet_input)
+        self.add_item(self.color_input)
+        self.add_item(self.footer_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = load_antinuke_config()
+        if "embed" not in cfg:
+            cfg["embed"] = {}
+
+        raw_col = self.color_input.value.strip()
+        if not raw_col.startswith("#") and not raw_col.isalpha():
+            raw_col = "#" + raw_col
+
+        cfg["embed"]["title"] = resolve_custom_emoji(interaction.client, self.title_input.value.strip())
+        cfg["embed"]["subtitle"] = resolve_custom_emoji(interaction.client, self.subtitle_input.value.strip())
+        cfg["embed"]["bullet_emoji"] = resolve_custom_emoji(interaction.client, self.bullet_input.value.strip())
+        cfg["embed"]["color"] = raw_col
+        cfg["embed"]["footer"] = self.footer_input.value.strip()
+        save_antinuke_config(cfg)
+
+        preview_embed = build_antinuke_whitelist_embed(interaction.guild, interaction.user, [], True)
+        await interaction.response.send_message(
+            "✅ **VOID Security Panel updated successfully!** Here is your new live preview:",
+            embed=preview_embed,
+            ephemeral=True
+        )
+
+
+class ByteWhitelistPermissionSelect(discord.ui.Select):
+    def __init__(self, target_user_id: int, current_perms: list[str]):
+        options = [
+            discord.SelectOption(label="Grant All Permissions", value="all", description="Whitelist for all protection actions"),
+            discord.SelectOption(label="Ban", value="ban", description="Whitelist for ban"),
+            discord.SelectOption(label="Unban", value="unban", description="Whitelist for unban"),
+            discord.SelectOption(label="Kick", value="kick", description="Whitelist for kick"),
+            discord.SelectOption(label="Bot Add", value="bot_add", description="Whitelist for bot add"),
+            discord.SelectOption(label="Channel Create", value="channel_create", description="Whitelist for channel create"),
+            discord.SelectOption(label="Channel Delete", value="channel_delete", description="Whitelist for channel delete"),
+            discord.SelectOption(label="Channel Update", value="channel_update", description="Whitelist for channel update"),
+            discord.SelectOption(label="Role Create", value="role_create", description="Whitelist for role create"),
+            discord.SelectOption(label="Role Delete", value="role_delete", description="Whitelist for role delete"),
+            discord.SelectOption(label="Role Update", value="role_update", description="Whitelist for role update"),
+            discord.SelectOption(label="Member Update", value="member_update", description="Whitelist for member update"),
+            discord.SelectOption(label="Member Role Update", value="member_role_update", description="Whitelist for member role update"),
+            discord.SelectOption(label="Emoji Action", value="emoji_action", description="Whitelist for emoji action"),
+            discord.SelectOption(label="Sticker Action", value="sticker_action", description="Whitelist for sticker action"),
+            discord.SelectOption(label="Message Delete", value="message_delete", description="Whitelist for message delete"),
+            discord.SelectOption(label="Everyone Ping", value="everyone_ping", description="Whitelist for everyone ping"),
+            discord.SelectOption(label="Here Ping", value="here_ping", description="Whitelist for here ping"),
+            discord.SelectOption(label="Webhook Create", value="webhook_create", description="Whitelist for webhook create"),
+            discord.SelectOption(label="Webhook Delete", value="webhook_delete", description="Whitelist for webhook delete"),
+            discord.SelectOption(label="Webhook Update", value="webhook_update", description="Whitelist for webhook update"),
+            discord.SelectOption(label="Guild Update", value="guild_update", description="Whitelist for guild update"),
+            discord.SelectOption(label="Integration Add", value="integration_add", description="Whitelist for integration add"),
+            discord.SelectOption(label="Integration Update", value="integration_update", description="Whitelist for integration update"),
+            discord.SelectOption(label="Integration Delete", value="integration_delete", description="Whitelist for integration delete")
+        ]
+        super().__init__(
+            placeholder="› Choose Permissions to Grant",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+            row=0
+        )
+        self.target_user_id = target_user_id
+
+    async def callback(self, interaction: discord.Interaction):
+        view: ByteWhitelistControlView = self.view
+        selected = self.values
+        if "all" in selected:
+            view.is_all = True
+            view.selected_permissions = [k for k, _ in ANTINUKE_MODULES_LIST]
+        else:
+            view.is_all = False
+            view.selected_permissions = selected
+
+        embed = build_antinuke_whitelist_embed(interaction.guild, view.target_user, view.selected_permissions, view.is_all)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ByteWhitelistControlView(discord.ui.View):
+    def __init__(self, target_user: discord.User | discord.Member, author_id: int):
+        super().__init__(timeout=300)
+        self.target_user = target_user
+        self.author_id = author_id
+
+        cfg = load_antinuke_config()
+        user_data = cfg.get("whitelisted_users", {}).get(str(target_user.id), {})
+        self.is_all = user_data.get("all", False)
+        self.selected_permissions = user_data.get("permissions", [])
+        if self.is_all and not self.selected_permissions:
+            self.selected_permissions = [k for k, _ in ANTINUKE_MODULES_LIST]
+
+        self.add_item(ByteWhitelistPermissionSelect(target_user.id, self.selected_permissions))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not (await interaction.client.is_owner(interaction.user)):
+            await interaction.response.send_message("❌ **Access Denied:** Only the **Server Owner** and **Extra Owner** can use Whitelist buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Grant All Permissions", style=discord.ButtonStyle.success, emoji="👑", row=1)
+    async def grant_all_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.is_all = True
+        self.selected_permissions = [k for k, _ in ANTINUKE_MODULES_LIST]
+        cfg = load_antinuke_config()
+        cfg["whitelisted_users"][str(self.target_user.id)] = {
+            "all": True,
+            "permissions": self.selected_permissions
+        }
+        save_antinuke_config(cfg)
+
+        embed = build_antinuke_whitelist_embed(interaction.guild, self.target_user, self.selected_permissions, True)
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(f"✅ **{self.target_user.mention} has been granted ALL Anti-Nuke Whitelist permissions!**", ephemeral=True)
+
+    @discord.ui.button(label="Apply & Save", style=discord.ButtonStyle.primary, emoji="💾", row=1)
+    async def apply_save_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_antinuke_config()
+        cfg["whitelisted_users"][str(self.target_user.id)] = {
+            "all": self.is_all,
+            "permissions": self.selected_permissions
+        }
+        save_antinuke_config(cfg)
+
+        embed = build_antinuke_whitelist_embed(interaction.guild, self.target_user, self.selected_permissions, self.is_all)
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(f"✅ **Saved Whitelist permissions for {self.target_user.mention}!**", ephemeral=True)
+
+    @discord.ui.button(label="Remove All", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    async def remove_all_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.is_all = False
+        self.selected_permissions = []
+        cfg = load_antinuke_config()
+        if str(self.target_user.id) in cfg.get("whitelisted_users", {}):
+            del cfg["whitelisted_users"][str(self.target_user.id)]
+            save_antinuke_config(cfg)
+
+        embed = build_antinuke_whitelist_embed(interaction.guild, self.target_user, [], False)
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(f"🗑️ **Removed all Whitelist permissions from {self.target_user.mention}!**", ephemeral=True)
+
+
+# ==============================================================================
+# BYTE CORPORATION — ANTI-NUKE EVENT LISTENERS & SECURITY COMMANDS
+# Active Real-Time Protection against unauthorized mass destruction
+# ==============================================================================
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User | discord.Member):
+    """Anti-Ban: Blocks unauthorized mass bans and auto-unbans victims."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("ban", True):
+        return
+
+    entry = await get_audit_entry(guild, discord.AuditLogAction.ban, target_id=user.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "ban"):
+        return
+
+    # Unauthorized ban detected!
+    await punish_antinuke_offender(guild, entry.user, f"Banned member {user.name} ({user.id}) without whitelist", "Anti-Ban")
+    try:
+        await guild.unban(user, reason="[VOID Security Anti-Nuke] Auto-Restore Unauthorized Ban")
+    except Exception:
+        pass
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Anti-Kick: Blocks unauthorized kicks."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("kick", True):
+        return
+
+    guild = member.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.kick, target_id=member.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "kick"):
+        return
+
+    # Unauthorized kick detected!
+    await punish_antinuke_offender(guild, entry.user, f"Kicked member {member.name} ({member.id}) without whitelist", "Anti-Kick")
+
+
+@bot.event
+async def on_member_unban(guild: discord.Guild, user: discord.User):
+    """Anti-Unban: Blocks unauthorized unbanning of malicious users."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("unban", True):
+        return
+
+    entry = await get_audit_entry(guild, discord.AuditLogAction.unban, target_id=user.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "unban"):
+        return
+
+    # Unauthorized unban detected! Re-ban and punish offender
+    try:
+        await guild.ban(user, reason="[VOID Security Anti-Nuke] Auto Re-Ban: Unauthorized Unban")
+    except Exception:
+        pass
+    await punish_antinuke_offender(guild, entry.user, f"Unbanned user {user.name} ({user.id}) without whitelist", "Anti-Unban")
+
+
+@bot.event
+async def on_guild_channel_create(channel: discord.abc.GuildChannel):
+    """Anti-Channel Create: Deletes unauthorized channels created by attackers."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("channel_create", True):
+        return
+
+    guild = channel.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.channel_create, target_id=channel.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "channel_create"):
+        return
+
+    # Unauthorized channel create detected!
+    try:
+        await channel.delete(reason="[VOID Security Anti-Nuke] Unauthorized Channel Creation")
+    except Exception:
+        pass
+    await punish_antinuke_offender(guild, entry.user, f"Created channel #{channel.name} without whitelist", "Anti-Channel Create")
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    """Anti-Channel Delete: Clones/Restores deleted channels and bans the attacker."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("channel_delete", True):
+        return
+
+    guild = channel.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.channel_delete, target_id=channel.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "channel_delete"):
+        return
+
+    # Punish attacker
+    await punish_antinuke_offender(guild, entry.user, f"Deleted channel #{channel.name} without whitelist", "Anti-Channel Delete")
+
+    # Auto-Restore Channel
+    try:
+        await channel.clone(reason="[VOID Security Anti-Nuke] Auto-Restore Deleted Channel")
+    except Exception as e:
+        logger.error(f"Failed to auto-restore deleted channel: {e}")
+
+
+@bot.event
+async def on_guild_channel_update(before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
+    """Anti-Channel Update: Blocks malicious permission / name tampering on channels."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("channel_update", True):
+        return
+
+    guild = after.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.channel_update, target_id=after.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "channel_update"):
+        return
+
+    await punish_antinuke_offender(guild, entry.user, f"Tampered with #{after.name} settings/permissions", "Anti-Channel Update")
+
+
+@bot.event
+async def on_guild_role_create(role: discord.Role):
+    """Anti-Role Create: Deletes unauthorized newly created roles."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("role_create", True):
+        return
+
+    guild = role.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.role_create, target_id=role.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "role_create"):
+        return
+
+    try:
+        await role.delete(reason="[VOID Security Anti-Nuke] Unauthorized Role Creation")
+    except Exception:
+        pass
+    await punish_antinuke_offender(guild, entry.user, f"Created role @{role.name} without whitelist", "Anti-Role Create")
+
+
+@bot.event
+async def on_guild_role_delete(role: discord.Role):
+    """Anti-Role Delete: Auto-Restores deleted roles and punishes attacker."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("role_delete", True):
+        return
+
+    guild = role.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.role_delete, target_id=role.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "role_delete"):
+        return
+
+    await punish_antinuke_offender(guild, entry.user, f"Deleted role @{role.name} without whitelist", "Anti-Role Delete")
+    try:
+        await guild.create_role(name=role.name, permissions=role.permissions, color=role.color, hoist=role.hoist, mentionable=role.mentionable, reason="[VOID Security Anti-Nuke] Auto-Restore Deleted Role")
+    except Exception:
+        pass
+
+
+@bot.event
+async def on_guild_role_update(before: discord.Role, after: discord.Role):
+    """Anti-Role Update: Blocks unauthorized admin privilege escalation."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("role_update", True):
+        return
+
+    guild = after.guild
+    # Check if dangerous permissions were added
+    dangerous = ["administrator", "ban_members", "manage_channels", "manage_roles", "manage_guild"]
+    escalated = any(getattr(after.permissions, perm) and not getattr(before.permissions, perm) for perm in dangerous)
+
+    if not escalated and before.name == after.name:
+        return
+
+    entry = await get_audit_entry(guild, discord.AuditLogAction.role_update, target_id=after.id)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "role_update"):
+        return
+
+    # Revert permissions
+    try:
+        await after.edit(permissions=before.permissions, reason="[VOID Security Anti-Nuke] Reverted Unauthorized Permission Escalation")
+    except Exception:
+        pass
+    await punish_antinuke_offender(guild, entry.user, f"Attempted permission escalation on @{after.name}", "Anti-Role Update")
+
+
+@bot.event
+async def on_webhooks_update(channel: discord.abc.GuildChannel):
+    """Anti-Webhook: Prevents malicious webhook creation and spamming."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("webhook_create", True):
+        return
+
+    guild = channel.guild
+    entry = await get_audit_entry(guild, discord.AuditLogAction.webhook_create)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "webhook_create"):
+        return
+
+    try:
+        hooks = await channel.webhooks()
+        for h in hooks:
+            await h.delete(reason="[VOID Security Anti-Nuke] Unauthorized Webhook")
+    except Exception:
+        pass
+    await punish_antinuke_offender(guild, entry.user, f"Created unauthorized webhook in #{channel.name}", "Anti-Webhook")
+
+
+@bot.event
+async def on_guild_update(before: discord.Guild, after: discord.Guild):
+    """Anti-Guild Update: Blocks unauthorized server name/vanity/icon tampering."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("guild_update", True):
+        return
+
+    if before.name == after.name and before.icon == after.icon:
+        return
+
+    entry = await get_audit_entry(after, discord.AuditLogAction.guild_update)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(after, entry.user, "guild_update"):
+        return
+
+    # Revert server name if changed
+    if before.name != after.name:
+        try:
+            await after.edit(name=before.name, reason="[VOID Security Anti-Nuke] Reverted Unauthorized Name Change")
+        except Exception:
+            pass
+    await punish_antinuke_offender(after, entry.user, f"Tampered with server name/icon ({after.name})", "Anti-Guild Update")
+
+
+@bot.event
+async def on_guild_emojis_update(guild: discord.Guild, before: list[discord.Emoji], after: list[discord.Emoji]):
+    """Anti-Emoji Action: Blocks mass emoji deletion."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("emoji_action", True):
+        return
+
+    if len(before) <= len(after):
+        return
+
+    entry = await get_audit_entry(guild, discord.AuditLogAction.emoji_delete)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "emoji_action"):
+        return
+
+    await punish_antinuke_offender(guild, entry.user, f"Deleted server emojis without whitelist", "Anti-Emoji Action")
+
+
+@bot.event
+async def on_guild_stickers_update(guild: discord.Guild, before: list[discord.GuildSticker], after: list[discord.GuildSticker]):
+    """Anti-Sticker Action: Blocks mass sticker deletion."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("sticker_action", True):
+        return
+
+    if len(before) <= len(after):
+        return
+
+    entry = await get_audit_entry(guild, discord.AuditLogAction.sticker_delete)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "sticker_action"):
+        return
+
+    await punish_antinuke_offender(guild, entry.user, f"Deleted server stickers without whitelist", "Anti-Sticker Action")
+
+
+@bot.event
+async def on_guild_integrations_update(guild: discord.Guild):
+    """Anti-Integration: Blocks rogue integration additions/deletions."""
+    cfg = load_antinuke_config()
+    if not cfg.get("enabled", True) or not cfg.get("modules", {}).get("integration_add", True):
+        return
+
+    entry = await get_audit_entry(guild, discord.AuditLogAction.integration_create)
+    if not entry or not entry.user:
+        return
+    if is_antinuke_whitelisted(guild, entry.user, "integration_add"):
+        return
+
+    await punish_antinuke_offender(guild, entry.user, "Tampered with server integrations", "Anti-Integration")
+
+
+# ==============================================================================
+# COMMANDS: *antinuke & *wl (Matches Exact VOID Panels)
+# ==============================================================================
+
+@bot.command(name="antinuke", aliases=["security", "shield", "void", "setup"])
+async def antinuke_cmd(ctx, action: str = None, *, arg: str = None):
+    """
+    VOID Security Master Command:
+    - `*antinuke`: Shows VOID-style activation panel & status.
+    - `*antinuke enable`: Turns ON all 24 protection modules.
+    - `*antinuke disable`: Temporarily disables protection.
+    - `*antinuke log #channel`: Sets the security alert log channel.
+    - `*antinuke status`: View status of all protection modules.
+    """
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not (await bot.is_owner(ctx.author)):
+        await ctx.reply("❌ **Access Denied:** Only the **Server Owner** and **Extra Owner** can manage Security settings. (Administrators are not permitted).")
+        return
+
+    cfg = load_antinuke_config()
+    action = (action or "").lower().strip()
+
+    if action in ["edit", "customize", "custom", "setting", "settings", "ui"]:
+        modal = VoidSecurityEditModal()
+        # If run via message context, we can send an interactive button to open the modal
+        class OpenEditModalView(discord.ui.View):
+            @discord.ui.button(label="🎨 Open VOID Panel Editor", style=discord.ButtonStyle.primary, emoji="✏️")
+            async def open_modal_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+                await interaction.response.send_modal(VoidSecurityEditModal())
+
+        embed = discord.Embed(
+            title="🎨 VOID Security — Live Panel Customizer",
+            description=(
+                "Click the button below to open the **Interactive Form Modal**:\n\n"
+                "• **Title:** Change panel header\n"
+                "• **Subtitle / Status:** Change status header\n"
+                "• **Bullet Emoji:** Change `»` to `🔹`, `⚡`, `👑`, etc.\n"
+                "• **Color:** Set `#0055FF` (Blue), `#00D9FF` (Cyan), or any Hex\n"
+                "• **Footer:** Change branding footer text\n"
+            ),
+            color=get_embed_color_from_config(cfg)
+        )
+        await ctx.reply(embed=embed, view=OpenEditModalView())
+        return
+
+    elif action in ["setcolor", "color"]:
+        if not arg:
+            await ctx.reply("❌ **Usage:** `*antinuke setcolor #0055FF` (or `blue`, `cyan`, `purple`, `green`, `red`)")
+            return
+        if "embed" not in cfg:
+            cfg["embed"] = {}
+        cfg["embed"]["color"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply(f"✅ **Embed color updated to:** `{arg.strip()}`", embed=preview)
+        return
+
+    elif action in ["settitle", "title"]:
+        if not arg:
+            await ctx.reply("❌ **Usage:** `*antinuke settitle 🛡️ Thank you for adding VOID!` *(Supports animated emojis like `<a:shield:id>`)*")
+            return
+        if "welcome_embed" not in cfg:
+            cfg["welcome_embed"] = {}
+        if "embed" not in cfg:
+            cfg["embed"] = {}
+        cfg["welcome_embed"]["title"] = arg.strip()
+        cfg["embed"]["title"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply(f"✅ **Title updated to:** {arg.strip()}", embed=preview)
+        return
+
+    elif action in ["setdesc", "desc", "description"]:
+        if not arg:
+            await ctx.reply("❌ **Usage:** `*antinuke setdesc <custom description text>`")
+            return
+        if "welcome_embed" not in cfg:
+            cfg["welcome_embed"] = {}
+        if "embed" not in cfg:
+            cfg["embed"] = {}
+        cfg["welcome_embed"]["body_text"] = arg.strip()
+        cfg["embed"]["custom_description"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply("✅ **Description updated!**", embed=preview)
+        return
+
+    elif action in ["setlogo", "logo", "thumbnail", "avatar"]:
+        if not arg:
+            if ctx.message.attachments:
+                arg = ctx.message.attachments[0].url
+            else:
+                await ctx.reply("❌ **Usage:** `*antinuke setlogo <image_url>` or attach an image with `*antinuke setlogo`")
+                return
+        cfg["logo_url"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply("✅ **Bot logo updated for the right-side thumbnail!**", embed=preview)
+        return
+
+    elif action in ["resetlogo", "clearlogo"]:
+        cfg["logo_url"] = ""
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply("✅ **Logo reset to default Bot Discord Avatar!**", embed=preview)
+        return
+
+    elif action in ["setname", "botname", "name"]:
+        if not arg:
+            await ctx.reply("❌ **Usage:** `*antinuke setname <bot_name>` (e.g. `*antinuke setname SpyDerMan`)")
+            return
+        cfg["bot_name"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply(f"✅ **Bot name updated to:** `{arg.strip()}` *(Invite button label will say `Invite {arg.strip()}`)*", embed=preview)
+        return
+
+    elif action in ["setsupport", "support"]:
+        if not arg or not arg.startswith("http"):
+            await ctx.reply("❌ **Usage:** `*antinuke setsupport https://discord.gg/bytecorporation`")
+            return
+        cfg["support_url"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply(f"✅ **Support Server link updated to:** {arg.strip()}", embed=preview)
+        return
+
+    elif action in ["setinvite", "invite"]:
+        if not arg or not arg.startswith("http"):
+            await ctx.reply("❌ **Usage:** `*antinuke setinvite https://discord.com/oauth2/authorize?...`")
+            return
+        cfg["invite_url"] = arg.strip()
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply(f"✅ **Bot Invite link updated!**", embed=preview)
+        return
+
+    elif action in ["setemoji", "emoji", "setbullet", "bullet"]:
+        parts = (arg or "").split(maxsplit=1)
+        if not parts:
+            await ctx.reply(
+                "❌ **Usage:**\n"
+                "• `*antinuke setemoji bullet 🔹` (changes list bullet)\n"
+                "• `*antinuke setemoji wine 🍷` (changes greeting emoji)\n"
+                "• `*antinuke setemoji snow ❄️` (changes server tag emoji)\n"
+                "• `*antinuke setemoji shield 🛡️` (changes shield icon)\n"
+                "*(Animated custom emojis `<a:name:id>` are 100% supported!)*"
+            )
+            return
+
+        target_slot = parts[0].lower()
+        if len(parts) == 1:
+            emoji_val = parts[0]
+            target_slot = "bullet"
+        else:
+            emoji_val = parts[1]
+
+        if "welcome_embed" not in cfg:
+            cfg["welcome_embed"] = {}
+        if "embed" not in cfg:
+            cfg["embed"] = {}
+
+        resolved_emoji = resolve_custom_emoji(ctx.bot, emoji_val)
+
+        if target_slot in ["bullet", "»", "arrow"]:
+            cfg["welcome_embed"]["bullet_emoji"] = resolved_emoji
+            cfg["embed"]["bullet_emoji"] = resolved_emoji
+            saved_as = "Bullet Emoji"
+        elif target_slot in ["wine", "greet", "greeting"]:
+            cfg["welcome_embed"]["greeting_emoji"] = resolved_emoji
+            saved_as = "Greeting Emoji"
+        elif target_slot in ["snow", "server", "snowflake"]:
+            cfg["welcome_embed"]["server_emoji"] = resolved_emoji
+            saved_as = "Server Emoji"
+        elif target_slot in ["shield", "badge", "icon"]:
+            cfg["welcome_embed"]["shield_emoji"] = resolved_emoji
+            saved_as = "Shield Emoji"
+        else:
+            cfg["welcome_embed"]["bullet_emoji"] = resolved_emoji
+            cfg["embed"]["bullet_emoji"] = resolved_emoji
+            saved_as = "Bullet Emoji"
+
+        save_antinuke_config(cfg)
+        preview = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        await ctx.reply(f"✅ **{saved_as} updated to:** {emoji_val}", embed=preview)
+        return
+
+    elif action in ["settimeout", "timeout", "time"]:
+        if not arg or not arg.strip().isdigit():
+            await ctx.reply("❌ **Usage:** `*antinuke settimeout <minutes>` (e.g. `*antinuke settimeout 10` or `5`)")
+            return
+        mins = int(arg.strip())
+        if "anti_everyone" not in cfg:
+            cfg["anti_everyone"] = {}
+        if "anti_link" not in cfg:
+            cfg["anti_link"] = {}
+        cfg["anti_everyone"]["timeout_minutes"] = mins
+        cfg["anti_link"]["timeout_minutes"] = mins
+        save_antinuke_config(cfg)
+        await ctx.reply(f"✅ **Timeout duration for mass pings & unauthorized links updated to:** `{mins} minutes` *(Members will be timed out, NOT banned).*")
+        return
+
+    elif action in ["allowchannel", "whitelink", "allowlink"]:
+        target_ch = ctx.message.channel_mentions[0] if ctx.message.channel_mentions else ctx.channel
+        if "anti_link" not in cfg:
+            cfg["anti_link"] = {"allowed_channels": []}
+        if "allowed_channels" not in cfg["anti_link"]:
+            cfg["anti_link"]["allowed_channels"] = []
+        if target_ch.id not in cfg["anti_link"]["allowed_channels"]:
+            cfg["anti_link"]["allowed_channels"].append(target_ch.id)
+            save_antinuke_config(cfg)
+            await ctx.reply(f"✅ Channel {target_ch.mention} is now **allowed for links** *(Anti-link will ignore this channel).*")
+        else:
+            cfg["anti_link"]["allowed_channels"].remove(target_ch.id)
+            save_antinuke_config(cfg)
+            await ctx.reply(f"🔒 Channel {target_ch.mention} link permission **revoked** *(Links will now be blocked & timed out).*")
+        return
+
+    if action == "enable":
+        cfg["enabled"] = True
+        save_antinuke_config(cfg)
+        embed = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+        support_link = cfg.get("support_url", "https://discord.gg/uaDzFDtFSe")
+        bot_name = cfg.get("bot_name") or (bot.user.name if bot.user else "Bot")
+        bot_invite = cfg.get("invite_url") or (discord.utils.oauth_url(bot.user.id, permissions=discord.Permissions(administrator=True)) if bot.user else None)
+        view = VoidSecurityActivationView(support_url=support_link, invite_url=bot_invite, bot_name=bot_name)
+        await ctx.reply(embed=embed, view=view)
+        return
+
+    elif action == "disable":
+        cfg["enabled"] = False
+        save_antinuke_config(cfg)
+        await ctx.reply("⚠️ **VOID Security Anti-Nuke has been DISABLED.** Server is no longer actively guarded against unauthorized changes.")
+        return
+
+    elif action in ["log", "logs", "setlog", "channel"]:
+        channel = None
+        if ctx.message.channel_mentions:
+            channel = ctx.message.channel_mentions[0]
+        elif arg:
+            try:
+                channel = ctx.guild.get_channel(int(arg.strip("<#> ")))
+            except ValueError:
+                pass
+        if not channel:
+            channel = ctx.channel
+
+        cfg["log_channel_id"] = channel.id
+        save_antinuke_config(cfg)
+        await ctx.reply(f"✅ **Security Alert Logs channel set to:** {channel.mention}\n*All future anti-nuke attack notifications will be dispatched here.*")
+        return
+
+    elif action in ["status", "info"]:
+        status_str = "🟢 ACTIVE" if cfg.get("enabled", True) else "🔴 DISABLED"
+        log_ch = f"<#{cfg.get('log_channel_id')}>" if cfg.get('log_channel_id') else "*(Not Set — using default log)*"
+        wl_count = len(cfg.get("whitelisted_users", {}))
+        embed_color = get_embed_color_from_config(cfg)
+        embed = discord.Embed(
+            title="🛡️ VOID Security System — Live Status",
+            description=(
+                f"❯ **Protection Status:** `{status_str}`\n"
+                f"❯ **Whitelisted Admins:** `{wl_count}` staff members immune\n"
+                f"❯ **Alert Logs Channel:** {log_ch}\n"
+                f"❯ **Active Protection Modules:** `24/24 Enabled`\n\n"
+                f"**Management Commands:**\n"
+                f"• `*wl add @user` — Open interactive whitelist panel\n"
+                f"• `*wl remove @user` — Revoke whitelist permissions\n"
+                f"• `*wl list` — View all whitelisted staff\n"
+                f"• `*antinuke log #channel` — Set custom alert channel\n"
+                f"• `*antinuke edit` — Live interactive modal editor"
+            ),
+            color=embed_color
+        )
+        embed.set_footer(text=f"VOID Security System • Status | Today at {discord.utils.utcnow().strftime('%H:%M')}")
+        await ctx.reply(embed=embed)
+        return
+
+    # Default / setup: Show Main Activation / Status Panel matching exact Aegis/VOID UI
+    embed = build_void_welcome_embed(ctx.guild, ctx.author, cfg)
+    support_link = cfg.get("support_url", "https://discord.gg/uaDzFDtFSe")
+    bot_name = cfg.get("bot_name") or (bot.user.name if bot.user else "Bot")
+    bot_invite = cfg.get("invite_url") or (discord.utils.oauth_url(bot.user.id, permissions=discord.Permissions(administrator=True)) if bot.user else None)
+    view = VoidSecurityActivationView(support_url=support_link, invite_url=bot_invite, bot_name=bot_name)
+    await ctx.reply(embed=embed, view=view)
+
+
+@bot.command(name="extraowner", aliases=["extraowners", "eo", "owner"])
+async def extraowner_cmd(ctx, action: str = None, target: discord.User = None):
+    """
+    Extra Owner Management System:
+    - Only Server Owner can add or remove Extra Owners.
+    - Extra Owners have full Anti-Nuke immunity and can whitelist/manage security.
+    - Regular Administrators are blocked from whitelisting or managing owners!
+    """
+    is_app_owner = await bot.is_owner(ctx.author)
+    is_srv_owner = (ctx.author.id == ctx.guild.owner_id)
+
+    action = (action or "").lower().strip()
+
+    if action in ["list", "show", "all"] or not action:
+        if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not is_app_owner:
+            await ctx.reply("❌ **Access Denied:** Only the **Server Owner** or **Extra Owner** can view ownership status.")
+            return
+
+        cfg = load_antinuke_config()
+        extra_owners = cfg.get("extra_owners", [])
+        
+        lines = [f"👑 **Server Owner:** {ctx.guild.owner.mention} *(Primary Owner)*\n"]
+        if extra_owners:
+            lines.append("**Extra Owners (Full Security & Whitelist Access):**")
+            for uid in extra_owners:
+                u = ctx.guild.get_member(int(uid))
+                u_str = u.mention if u else f"<@{uid}>"
+                lines.append(f"• {u_str} — `[ Extra Owner ]`")
+        else:
+            lines.append("*(No Extra Owners configured. Server Owner can add one with `*extraowner add @user`)*")
+
+        embed = discord.Embed(
+            title="👑 VOID Security — Server Ownership System",
+            description="\n".join(lines) + "\n\n*Only the Server Owner and Extra Owners can manage Whitelist & Anti-Nuke.*",
+            color=get_embed_color_from_config(cfg)
+        )
+        logo_url = cfg.get("logo_url") or (bot.user.display_avatar.url if (bot.user and bot.user.display_avatar) else None)
+        if logo_url:
+            embed.set_thumbnail(url=logo_url)
+        embed.set_footer(text=f"VOID Security System | Today at {discord.utils.utcnow().strftime('%H:%M')}")
+        await ctx.reply(embed=embed)
+        return
+
+    # Adding / Removing Extra Owners: STRICTLY Server Owner (or App Owner)
+    if not (is_srv_owner or is_app_owner):
+        owner_name = ctx.guild.owner.display_name if ctx.guild.owner else "Server Owner"
+        await ctx.reply(f"❌ **Access Denied:** ONLY the **Server Owner** (`{owner_name}`) can add or remove Extra Owners!")
+        return
+
+    if action == "add":
+        if not target:
+            if ctx.message.mentions:
+                target = ctx.message.mentions[0]
+            else:
+                await ctx.reply("❌ **Usage:** `*extraowner add @user` — Please mention the user to promote to Extra Owner.")
+                return
+
+        if target.id == ctx.guild.owner_id:
+            await ctx.reply("ℹ️ This user is already the **Server Owner**.")
+            return
+
+        cfg = load_antinuke_config()
+        if "extra_owners" not in cfg:
+            cfg["extra_owners"] = []
+
+        if target.id not in cfg["extra_owners"] and str(target.id) not in [str(x) for x in cfg["extra_owners"]]:
+            cfg["extra_owners"].append(target.id)
+            save_antinuke_config(cfg)
+            await ctx.reply(
+                f"👑 **{target.mention} has been promoted to EXTRA OWNER!**\n\n"
+                f"🛡️ **Security Privileges Granted:**\n"
+                f"• Full permanent immunity from all 24 Anti-Nuke checks.\n"
+                f"• Authorized to Whitelist staff members (`*wl add @user`).\n"
+                f"• Authorized to manage Security configuration (`*antinuke`).\n"
+                f"*(Regular administrators remain blocked from whitelisting)*"
+            )
+        else:
+            await ctx.reply(f"ℹ️ **{target.mention}** is already an Extra Owner.")
+        return
+
+    elif action in ["remove", "rem", "delete", "del"]:
+        if not target:
+            if ctx.message.mentions:
+                target = ctx.message.mentions[0]
+            else:
+                await ctx.reply("❌ **Usage:** `*extraowner remove @user`")
+                return
+
+        cfg = load_antinuke_config()
+        if "extra_owners" not in cfg:
+            cfg["extra_owners"] = []
+
+        cfg["extra_owners"] = [x for x in cfg["extra_owners"] if str(x) != str(target.id)]
+        save_antinuke_config(cfg)
+        await ctx.reply(f"🗑️ **{target.mention} has been removed from Extra Owners.** *(Their owner-level security privileges have been revoked).*")
+        return
+
+
+@bot.command(name="wl", aliases=["whitelist"])
+async def whitelist_cmd(ctx, subcmd: str = None, target: discord.User = None):
+    """
+    Interactive Whitelist Manager (Matches Exact VOID Panels):
+    - `*wl add @user`: Opens the exact VOID ImGUI panel with dropdown and action buttons.
+    - `*wl remove @user`: Strips whitelist from user.
+    - `*wl list`: Lists all whitelisted users.
+    """
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not (await bot.is_owner(ctx.author)):
+        await ctx.reply("❌ **Access Denied:** Only the **Server Owner** and **Extra Owner** can manage Anti-Nuke Whitelist. (Administrators are strictly restricted).")
+        return
+
+    subcmd = (subcmd or "").lower().strip()
+
+    if subcmd == "add":
+        if not target:
+            if ctx.message.mentions:
+                target = ctx.message.mentions[0]
+            else:
+                await ctx.reply("❌ **Usage:** `*wl add @user` — Please mention the user you want to whitelist.")
+                return
+
+        cfg = load_antinuke_config()
+        user_data = cfg.get("whitelisted_users", {}).get(str(target.id), {})
+        is_all = user_data.get("all", False)
+        perms = user_data.get("permissions", [])
+
+        embed = build_antinuke_whitelist_embed(ctx.guild, target, perms, is_all)
+        view = ByteWhitelistControlView(target, ctx.author.id)
+        await ctx.reply(embed=embed, view=view)
+        return
+
+    elif subcmd in ["remove", "rem", "delete", "del"]:
+        if not target:
+            if ctx.message.mentions:
+                target = ctx.message.mentions[0]
+            else:
+                await ctx.reply("❌ **Usage:** `*wl remove @user`")
+                return
+
+        cfg = load_antinuke_config()
+        if str(target.id) in cfg.get("whitelisted_users", {}):
+            del cfg["whitelisted_users"][str(target.id)]
+            save_antinuke_config(cfg)
+            await ctx.reply(f"🗑️ **{target.mention} has been completely removed from the Anti-Nuke Whitelist.**")
+        else:
+            await ctx.reply(f"ℹ️ **{target.mention}** is not in the whitelist.")
+        return
+
+    elif subcmd in ["list", "show"]:
+        cfg = load_antinuke_config()
+        whitelisted = cfg.get("whitelisted_users", {})
+        if not whitelisted:
+            await ctx.reply("📋 **No users are currently whitelisted.** *(Only the Server Owner and Bot have default immunity).*")
+            return
+
+        lines = []
+        for uid_str, data in whitelisted.items():
+            u = ctx.guild.get_member(int(uid_str))
+            uname = u.mention if u else f"<@{uid_str}>"
+            if data.get("all"):
+                status = "👑 [ All Permissions Whitelisted ]"
+            else:
+                p_count = len(data.get("permissions", []))
+                status = f"🛡️ [ {p_count} Specific Permissions ]"
+            lines.append(f"• {uname} — {status}")
+
+        embed = discord.Embed(
+            title="👑 VOID Security — Whitelisted Members",
+            description="\n".join(lines) + f"\n\n*Server Owner ({ctx.guild.owner.mention}) is permanently immune.*",
+            color=0x0055FF
+        )
+        await ctx.reply(embed=embed)
+        return
+
+    else:
+        await ctx.reply(
+            "📋 **VOID Security Whitelist Commands:**\n"
+            "• `*wl add @user` — Open interactive panel to whitelist staff\n"
+            "• `*wl remove @user` — Remove staff from whitelist\n"
+            "• `*wl list` — View all whitelisted staff members\n"
+        )
+
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    """Anti-Member Role Update: Prevents unauthorized assignment of administrative roles."""
+    if before.roles != after.roles:
+        cfg = load_antinuke_config()
+        if cfg.get("enabled", True) and cfg.get("modules", {}).get("member_role_update", True):
+            added_roles = [r for r in after.roles if r not in before.roles]
+            dangerous = [
+                r for r in added_roles
+                if r.permissions.administrator or r.permissions.ban_members or
+                   r.permissions.manage_channels or r.permissions.manage_roles or
+                   r.permissions.manage_guild
+            ]
+            if dangerous:
+                entry = await get_audit_entry(after.guild, discord.AuditLogAction.member_role_update, target_id=after.id)
+                if entry and entry.user:
+                    if not is_antinuke_whitelisted(after.guild, entry.user, "member_role_update"):
+                        try:
+                            await after.remove_roles(*dangerous, reason="[VOID Security Anti-Nuke] Reverted Unauthorized Role Escalation")
+                        except Exception:
+                            pass
+                        await punish_antinuke_offender(after.guild, entry.user, f"Gave dangerous role(s) to {after.name} without whitelist", "Anti-Member Role Update")
+
+
+# ==============================================================================
+# ENTERPRISE INTERACTIVE GIVEAWAY SYSTEM (Full Animated Emoji Support)
+# Matches User Screenshot (Cyan Embed, Prize Header, Relative Timestamps, Entry & Participants Buttons)
+# ==============================================================================
+
+GIVEAWAY_FILE = os.path.join(BASE_DIR, "giveaways.json")
+
+def load_giveaways() -> dict:
+    if not os.path.exists(GIVEAWAY_FILE):
+        return {"giveaways": {}, "default_config": {"button_emoji": "🎉", "bullet_emoji": "•", "color": "#00D9FF"}}
+    try:
+        with open(GIVEAWAY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"giveaways": {}, "default_config": {"button_emoji": "🎉", "bullet_emoji": "•", "color": "#00D9FF"}}
+
+def save_giveaways(data: dict):
+    try:
+        with open(GIVEAWAY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error saving giveaways: {e}")
+
+def parse_duration(time_str: str) -> int | None:
+    """Parses natural duration strings (e.g. 10s, 5m, 1h, 2d, 1w, 1h30m) to seconds."""
+    if not time_str:
+        return None
+    regex = re.compile(
+        r'((?P<weeks>\d+?)\s*(?:w|weeks?))?\s*'
+        r'((?P<days>\d+?)\s*(?:d|days?))?\s*'
+        r'((?P<hours>\d+?)\s*(?:h|hours?|hrs?))?\s*'
+        r'((?P<minutes>\d+?)\s*(?:m|minutes?|mins?))?\s*'
+        r'((?P<seconds>\d+?)\s*(?:s|seconds?|secs?))?',
+        re.IGNORECASE
+    )
+    match = regex.fullmatch(time_str.strip())
+    if not match:
+        if time_str.strip().isdigit():
+            return int(time_str.strip()) * 60
+        return None
+
+    parts = {k: int(v) for k, v in match.groupdict().items() if v}
+    if not parts:
+        return None
+
+    total_seconds = (
+        parts.get('weeks', 0) * 604800 +
+        parts.get('days', 0) * 86400 +
+        parts.get('hours', 0) * 3600 +
+        parts.get('minutes', 0) * 60 +
+        parts.get('seconds', 0)
+    )
+    return total_seconds if total_seconds > 0 else None
+
+def parse_giveaway_button_emoji(emoji_input: str) -> discord.PartialEmoji | str:
+    """Parses any unicode or animated custom emoji (<a:name:id>) for Discord UI Button."""
+    if not emoji_input:
+        return "🎉"
+    emoji_input = emoji_input.strip()
+    if emoji_input.startswith("<") and emoji_input.endswith(">"):
+        try:
+            return discord.PartialEmoji.from_str(emoji_input)
+        except Exception:
+            pass
+    # Search in bot cache
+    for e in bot.emojis:
+        if e.name.lower() == emoji_input.strip(":").lower():
+            return discord.PartialEmoji(name=e.name, animated=e.animated, id=e.id)
+    return emoji_input
+
+def get_giveaway_color(color_str: str) -> int:
+    if not color_str:
+        return 0x00D9FF
+    clean = color_str.replace("#", "").replace("0x", "").strip()
+    try:
+        return int(clean, 16)
+    except Exception:
+        return 0x00D9FF
+
+def build_giveaway_embed(gw: dict, is_ended: bool = False) -> discord.Embed:
+    prize = gw.get("prize", "Giveaway Prize")
+    host_id = gw.get("host_id")
+    host_mention = f"<@{host_id}>" if host_id else "Server Staff"
+    end_ts = int(gw.get("end_time", 0))
+    winners_count = int(gw.get("winners", 1))
+    participants = gw.get("participants", [])
+    bullet = gw.get("bullet_emoji", "•")
+    color_code = get_giveaway_color(gw.get("color", "#00D9FF"))
+
+    if not is_ended:
+        embed = discord.Embed(
+            title=prize,
+            color=color_code,
+            description=(
+                f"{bullet} **Hosted by** {host_mention}\n"
+                f"{bullet} **Ends:** <t:{end_ts}:f> (<t:{end_ts}:R>)\n"
+                f"{bullet} **Winners:** {winners_count}\n\n"
+                f"{bullet} **Participants:** {len(participants)}"
+            )
+        )
+    else:
+        winner_ids = gw.get("winner_ids", [])
+        if winner_ids:
+            winners_str = ", ".join([f"<@{uid}>" for uid in winner_ids])
+        else:
+            winners_str = "None (No valid entries)"
+
+        embed = discord.Embed(
+            title=f"🎉 Giveaway Ended: {prize}",
+            color=0x2B2D31,
+            description=(
+                f"{bullet} **Hosted by** {host_mention}\n"
+                f"{bullet} **Ended:** <t:{end_ts}:R>\n"
+                f"{bullet} **Winners:** {winners_str}\n\n"
+                f"{bullet} **Total Participants:** {len(participants)}"
+            )
+        )
+
+    return embed
+
+class GiveawayEntryView(discord.ui.View):
+    def __init__(self, message_id: int):
+        super().__init__(timeout=None)
+        self.message_id = str(message_id)
+
+        g_data = load_giveaways()
+        gw = g_data.get("giveaways", {}).get(str(message_id), {})
+        is_ended = gw.get("ended", False)
+
+        btn_emoji_raw = gw.get("button_emoji") or g_data.get("default_config", {}).get("button_emoji", "🎉")
+        btn_emoji = parse_giveaway_button_emoji(btn_emoji_raw)
+
+        # Button 1: Entry Button
+        self.entry_btn = discord.ui.Button(
+            label="Entry",
+            emoji=btn_emoji,
+            style=discord.ButtonStyle.primary,
+            custom_id=f"gw_entry:{message_id}",
+            disabled=is_ended
+        )
+        self.entry_btn.callback = self.entry_callback
+        self.add_item(self.entry_btn)
+
+        # Button 2: Participants Button
+        self.part_btn = discord.ui.Button(
+            label="Participants",
+            emoji="👥",
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"gw_part:{message_id}"
+        )
+        self.part_btn.callback = self.participants_callback
+        self.add_item(self.part_btn)
+
+    async def entry_callback(self, interaction: discord.Interaction):
+        g_data = load_giveaways()
+        gw = g_data.get("giveaways", {}).get(self.message_id)
+        if not gw:
+            await interaction.response.send_message("❌ Giveaway not found or expired.", ephemeral=True)
+            return
+        if gw.get("ended", False):
+            await interaction.response.send_message("❌ This giveaway has already ended!", ephemeral=True)
+            return
+
+        participants = gw.get("participants", [])
+        user_id = interaction.user.id
+
+        if user_id in participants:
+            participants.remove(user_id)
+            gw["participants"] = participants
+            save_giveaways(g_data)
+
+            embed = build_giveaway_embed(gw)
+            try:
+                await interaction.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
+
+            await interaction.response.send_message(f"❌ You have left the giveaway for **{gw.get('prize', 'Prize')}**.", ephemeral=True)
+        else:
+            participants.append(user_id)
+            gw["participants"] = participants
+            save_giveaways(g_data)
+
+            embed = build_giveaway_embed(gw)
+            try:
+                await interaction.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
+
+            await interaction.response.send_message(f"🎉 **Entry confirmed!** You entered the giveaway for **{gw.get('prize', 'Prize')}**! Good luck! 🍀", ephemeral=True)
+
+    async def participants_callback(self, interaction: discord.Interaction):
+        g_data = load_giveaways()
+        gw = g_data.get("giveaways", {}).get(self.message_id)
+        if not gw:
+            await interaction.response.send_message("❌ Giveaway not found.", ephemeral=True)
+            return
+
+        participants = gw.get("participants", [])
+        count = len(participants)
+        if count == 0:
+            await interaction.response.send_message("👥 **No participants have joined yet!** Be the first one to click **Entry**!", ephemeral=True)
+            return
+
+        sample = [f"<@{uid}>" for uid in participants[:20]]
+        more = f"\n*...and {count - 20} more*" if count > 20 else ""
+        await interaction.response.send_message(f"👥 **Total Participants ({count}):**\n" + ", ".join(sample) + more, ephemeral=True)
+
+
+async def end_giveaway(message_id: str, guild: discord.Guild = None):
+    g_data = load_giveaways()
+    gw = g_data.get("giveaways", {}).get(str(message_id))
+    if not gw or gw.get("ended", False):
+        return
+
+    gw["ended"] = True
+    save_giveaways(g_data)
+
+    channel = bot.get_channel(gw.get("channel_id"))
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(gw.get("channel_id"))
+        except Exception:
+            channel = None
+
+    msg = None
+    if channel:
+        try:
+            msg = await channel.fetch_message(int(message_id))
+        except Exception:
+            pass
+
+    participants = gw.get("participants", [])
+    winners_count = gw.get("winners", 1)
+
+    winner_ids = []
+    if participants:
+        sample_size = min(winners_count, len(participants))
+        winner_ids = random.sample(participants, sample_size)
+
+    gw["winner_ids"] = winner_ids
+    save_giveaways(g_data)
+
+    # Update giveaway message embed
+    ended_embed = build_giveaway_embed(gw, is_ended=True)
+    ended_view = GiveawayEntryView(int(message_id))
+
+    if msg:
+        try:
+            await msg.edit(embed=ended_embed, view=ended_view)
+        except Exception:
+            pass
+
+    # Send announcement in channel
+    if channel:
+        prize = gw.get("prize", "Prize")
+        if winner_ids:
+            winners_mention = ", ".join([f"<@{uid}>" for uid in winner_ids])
+            congrats_embed = discord.Embed(
+                title="🎉 Giveaway Winner Announced! 🎉",
+                description=f"Congratulations {winners_mention}!\nYou won **{prize}**!\n\n🔗 [Jump to Giveaway]({msg.jump_url if msg else ''})",
+                color=0x00FF88
+            )
+            try:
+                await channel.send(content=f"🎉 Congratulations {winners_mention}!", embed=congrats_embed)
+            except Exception:
+                pass
+        else:
+            try:
+                await channel.send(f"⚠️ **Giveaway for '{prize}' has ended!** No valid participants joined.")
+            except Exception:
+                pass
+
+
+@tasks.loop(seconds=10)
+async def giveaway_timer_task():
+    """Checks active giveaways every 10 seconds and concludes any that reached their end time."""
+    g_data = load_giveaways()
+    now_ts = int(discord.utils.utcnow().timestamp())
+    giveaways = g_data.get("giveaways", {})
+
+    for msg_id, gw in list(giveaways.items()):
+        if not gw.get("ended", False):
+            end_ts = int(gw.get("end_time", 0))
+            if now_ts >= end_ts:
+                try:
+                    await end_giveaway(msg_id)
+                except Exception as e:
+                    logger.error(f"Error concluding giveaway {msg_id}: {e}")
+
+
+@bot.command(name="gstart", aliases=["giveaway", "gcreate"])
+async def gstart_cmd(ctx, duration: str = None, winners_str: str = None, *, prize: str = None):
+    """Starts a new interactive giveaway matching user screenshot with animated emojis."""
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not ctx.author.guild_permissions.manage_guild and not ctx.author.guild_permissions.administrator:
+        await ctx.reply("❌ **Access Denied:** Only Server Owner, Extra Owners, or Admins can host giveaways.")
+        return
+
+    if not duration or not winners_str or not prize:
+        embed_help = discord.Embed(
+            title="🎉 Giveaway Setup Guide",
+            description=(
+                "**Usage:** `*gstart <duration> <winners> <prize>`\n\n"
+                "**Examples:**\n"
+                "• `*gstart 1h 1w 1 mont`\n"
+                "• `*gstart 30m 2 1 Month Discord Nitro`\n"
+                "• `*gstart 2d 1w Spotify Premium`\n\n"
+                "**Custom Emojis (Animated Supported):**\n"
+                "• `*gsetemoji button <emoji>` — Change Entry button emoji\n"
+                "• `*gsetemoji bullet <emoji>` — Change bullet point emoji\n"
+                "• `*gsetemoji color <#hex>` — Change embed color"
+            ),
+            color=0x00D9FF
+        )
+        await ctx.reply(embed=embed_help)
+        return
+
+    dur_seconds = parse_duration(duration)
+    if not dur_seconds or dur_seconds < 10:
+        await ctx.reply("❌ **Invalid duration!** Use format like `10m`, `1h`, `2d`, `1w` (min 10 seconds).")
+        return
+
+    clean_w = winners_str.lower().replace("w", "").strip()
+    if not clean_w.isdigit() or int(clean_w) < 1:
+        await ctx.reply("❌ **Invalid winners count!** Provide a number like `1` or `2w`.")
+        return
+    winners_count = int(clean_w)
+
+    g_data = load_giveaways()
+    defaults = g_data.get("default_config", {})
+
+    now_ts = int(discord.utils.utcnow().timestamp())
+    end_ts = now_ts + dur_seconds
+
+    gw_payload = {
+        "channel_id": ctx.channel.id,
+        "guild_id": ctx.guild.id,
+        "host_id": ctx.author.id,
+        "prize": prize.strip(),
+        "winners": winners_count,
+        "end_time": end_ts,
+        "participants": [],
+        "color": defaults.get("color", "#00D9FF"),
+        "button_emoji": defaults.get("button_emoji", "🎉"),
+        "bullet_emoji": defaults.get("bullet_emoji", "•"),
+        "ended": False
+    }
+
+    embed = build_giveaway_embed(gw_payload)
+
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
+
+    # Send message first
+    gw_msg = await ctx.channel.send(embed=embed)
+
+    # Attach interactive view with message_id
+    view = GiveawayEntryView(gw_msg.id)
+    await gw_msg.edit(view=view)
+
+    # Save to giveaways.json
+    g_data["giveaways"][str(gw_msg.id)] = gw_payload
+    save_giveaways(g_data)
+
+
+@bot.command(name="gend", aliases=["gstop"])
+async def gend_cmd(ctx, message_id: str = None):
+    """Ends an active giveaway immediately and selects winners."""
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not ctx.author.guild_permissions.manage_guild and not ctx.author.guild_permissions.administrator:
+        await ctx.reply("❌ **Access Denied.**")
+        return
+
+    if not message_id or not message_id.isdigit():
+        await ctx.reply("❌ **Usage:** `*gend <giveaway_message_id>`")
+        return
+
+    g_data = load_giveaways()
+    gw = g_data.get("giveaways", {}).get(message_id)
+    if not gw:
+        await ctx.reply("❌ **Giveaway not found!** Check the message ID.")
+        return
+    if gw.get("ended", False):
+        await ctx.reply("⚠️ **This giveaway has already ended.**")
+        return
+
+    await end_giveaway(message_id, ctx.guild)
+    await ctx.reply(f"✅ **Giveaway `{message_id}` ended successfully!**")
+
+
+@bot.command(name="greroll")
+async def greroll_cmd(ctx, message_id: str = None):
+    """Rerolls a new random winner for a concluded giveaway."""
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not ctx.author.guild_permissions.manage_guild and not ctx.author.guild_permissions.administrator:
+        await ctx.reply("❌ **Access Denied.**")
+        return
+
+    if not message_id or not message_id.isdigit():
+        await ctx.reply("❌ **Usage:** `*greroll <giveaway_message_id>`")
+        return
+
+    g_data = load_giveaways()
+    gw = g_data.get("giveaways", {}).get(message_id)
+    if not gw:
+        await ctx.reply("❌ **Giveaway not found!** Check the message ID.")
+        return
+
+    participants = gw.get("participants", [])
+    if not participants:
+        await ctx.reply("❌ **Cannot reroll:** No participants entered this giveaway.")
+        return
+
+    new_winner_id = random.choice(participants)
+    prize = gw.get("prize", "Prize")
+    await ctx.send(f"🎉 **Reroll Winner:** Congratulations <@{new_winner_id}>! You won the reroll for **{prize}**! 🥳")
+
+
+@bot.command(name="gsetemoji", aliases=["giveawayemoji"])
+async def gsetemoji_cmd(ctx, target: str = None, *, value: str = None):
+    """Customizes giveaway emojis (supports animated emojis) and colors."""
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not ctx.author.guild_permissions.manage_guild and not ctx.author.guild_permissions.administrator:
+        await ctx.reply("❌ **Access Denied.**")
+        return
+
+    if not target:
+        await ctx.reply(
+            "⚙️ **Giveaway Customization:**\n"
+            "• `*gsetemoji button <emoji>` — Set Entry button emoji *(supports animated `<a:name:id>`)*\n"
+            "• `*gsetemoji bullet <emoji>` — Set bullet point emoji *(supports animated `<a:name:id>`)*\n"
+            "• `*gsetemoji color <#hex>` — Set embed left border color *(e.g. `#00D9FF`)*\n"
+            "• `*gsetemoji reset` — Reset to default clean cyan style"
+        )
+        return
+
+    target = target.lower().strip()
+    g_data = load_giveaways()
+    if "default_config" not in g_data:
+        g_data["default_config"] = {}
+
+    if target == "reset":
+        g_data["default_config"] = {"button_emoji": "🎉", "bullet_emoji": "•", "color": "#00D9FF"}
+        save_giveaways(g_data)
+        await ctx.reply("✅ **Giveaway style reset to default cyan theme!**")
+        return
+
+    if not value:
+        await ctx.reply(f"❌ Provide a value for `{target}`.")
+        return
+
+    val = value.strip()
+    if target in ["button", "btn", "entry"]:
+        g_data["default_config"]["button_emoji"] = val
+        save_giveaways(g_data)
+        await ctx.reply(f"✅ **Giveaway Entry button emoji updated to:** {val}\n*Future giveaways will use this emoji on the button.*")
+    elif target in ["bullet", "dot", "icon"]:
+        g_data["default_config"]["bullet_emoji"] = val
+        save_giveaways(g_data)
+        await ctx.reply(f"✅ **Giveaway bullet emoji updated to:** {val}\n*Future giveaways will show this emoji beside details.*")
+    elif target in ["color", "colour", "hex"]:
+        g_data["default_config"]["color"] = val
+        save_giveaways(g_data)
+        await ctx.reply(f"✅ **Giveaway embed color updated to:** `{val}`")
+    else:
+        await ctx.reply("❌ Unknown option. Choose `button`, `bullet`, or `color`.")
+
+
+@bot.command(name="glist")
+async def glist_cmd(ctx):
+    """Lists all active giveaways in the server."""
+    g_data = load_giveaways()
+    giveaways = g_data.get("giveaways", {})
+    active = [(mid, gw) for mid, gw in giveaways.items() if not gw.get("ended", False) and gw.get("guild_id") == ctx.guild.id]
+
+    if not active:
+        await ctx.reply("ℹ️ **No active giveaways running in this server.**")
+        return
+
+    lines = []
+    for mid, gw in active:
+        end_ts = int(gw.get("end_time", 0))
+        prize = gw.get("prize", "Prize")
+        parts = len(gw.get("participants", []))
+        lines.append(f"• **{prize}** (ID: `{mid}`) — Ends <t:{end_ts}:R> | **{parts}** participants")
+
+    embed = discord.Embed(
+        title="🎉 Active Giveaways",
+        description="\n".join(lines),
+        color=0x00D9FF,
+        timestamp=discord.utils.utcnow()
+    )
+    await ctx.reply(embed=embed)
+
+
+
+
+
+
+# ==============================================================================
+# SLASH COMMANDS EXTENSION (For complete '/' Discord popup integration)
+# ==============================================================================
+
+@bot.tree.command(name="sync", description="Instantly sync all slash commands to this server")
+async def sync_slash(interaction: discord.Interaction):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not (await bot.is_owner(interaction.user)):
+        await interaction.response.send_message("❌ Access denied: Only Server Owner or Extra Owners can sync commands.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        bot.tree.copy_global_to(guild=interaction.guild)
+        synced = await bot.tree.sync(guild=interaction.guild)
+        await interaction.followup.send(f"✅ **Successfully synced {len(synced)} slash commands to this server!**\n*Type `/` in chat to see all commands immediately!*", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ **Sync error:** `{e}`", ephemeral=True)
+
+
+@bot.command(name="sync")
+async def sync_prefix_cmd(ctx):
+    """Instantly syncs all slash commands to this server."""
+    if not is_server_or_extra_owner(ctx.guild, ctx.author.id) and not (await bot.is_owner(ctx.author)):
+        await ctx.reply("❌ Access denied: Only Server Owner or Extra Owners can sync commands.")
+        return
+    msg = await ctx.reply("⏳ **Syncing all slash commands to this server...**")
+    try:
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced = await bot.tree.sync(guild=ctx.guild)
+        await msg.edit(content=f"✅ **Successfully synced {len(synced)} slash commands to {ctx.guild.name}!**\n*Type `/` in chat to see all commands immediately!*")
+    except Exception as e:
+        await msg.edit(content=f"❌ **Sync error:** `{e}`")
+
+
+@bot.tree.command(name="gstart", description="Start an interactive giveaway with animated emojis & instant winner picking")
+@app_commands.describe(duration="Giveaway duration (e.g. 10m, 1h, 2d, 1w)", winners="Number of winners (e.g. 1, 2, 3)", prize="Giveaway prize name (e.g. 1 Month Discord Nitro)")
+async def gstart_slash(interaction: discord.Interaction, duration: str, winners: int, prize: str):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not interaction.user.guild_permissions.manage_guild and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Access denied: Only Server Owner, Extra Owners, or Admins can host giveaways.", ephemeral=True)
+        return
+
+    dur_seconds = parse_duration(duration)
+    if not dur_seconds or dur_seconds < 10:
+        await interaction.response.send_message("❌ Invalid duration! Use format like `10m`, `1h`, `2d`, `1w` (min 10 seconds).", ephemeral=True)
+        return
+    if winners < 1:
+        await interaction.response.send_message("❌ Number of winners must be at least 1.", ephemeral=True)
+        return
+
+    g_data = load_giveaways()
+    defaults = g_data.get("default_config", {})
+    now_ts = int(discord.utils.utcnow().timestamp())
+    end_ts = now_ts + dur_seconds
+
+    gw_payload = {
+        "channel_id": interaction.channel_id,
+        "guild_id": interaction.guild_id,
+        "host_id": interaction.user.id,
+        "prize": prize.strip(),
+        "winners": winners,
+        "end_time": end_ts,
+        "participants": [],
+        "color": defaults.get("color", "#00D9FF"),
+        "button_emoji": defaults.get("button_emoji", "🎉"),
+        "bullet_emoji": defaults.get("bullet_emoji", "•"),
+        "ended": False
+    }
+
+    embed = build_giveaway_embed(gw_payload)
+    await interaction.response.send_message("🎉 Starting giveaway...", ephemeral=True)
+    gw_msg = await interaction.channel.send(embed=embed)
+    view = GiveawayEntryView(gw_msg.id)
+    await gw_msg.edit(view=view)
+
+    g_data["giveaways"][str(gw_msg.id)] = gw_payload
+    save_giveaways(g_data)
+
+
+@bot.tree.command(name="gend", description="End an active giveaway immediately and pick winners")
+@app_commands.describe(message_id="Message ID of the active giveaway to conclude")
+async def gend_slash(interaction: discord.Interaction, message_id: str):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not interaction.user.guild_permissions.manage_guild and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Access denied.", ephemeral=True)
+        return
+    if not message_id.isdigit():
+        await interaction.response.send_message("❌ Please provide a valid numeric message ID.", ephemeral=True)
+        return
+    g_data = load_giveaways()
+    gw = g_data.get("giveaways", {}).get(message_id)
+    if not gw:
+        await interaction.response.send_message("❌ Giveaway not found! Check the message ID.", ephemeral=True)
+        return
+    if gw.get("ended", False):
+        await interaction.response.send_message("⚠️ This giveaway has already ended.", ephemeral=True)
+        return
+    await end_giveaway(message_id, interaction.guild)
+    await interaction.response.send_message(f"✅ Giveaway `{message_id}` ended successfully!", ephemeral=True)
+
+
+@bot.tree.command(name="greroll", description="Reroll a new random winner for a concluded giveaway")
+@app_commands.describe(message_id="Message ID of the finished giveaway to reroll")
+async def greroll_slash(interaction: discord.Interaction, message_id: str):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not interaction.user.guild_permissions.manage_guild and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Access denied.", ephemeral=True)
+        return
+    if not message_id.isdigit():
+        await interaction.response.send_message("❌ Please provide a valid numeric message ID.", ephemeral=True)
+        return
+    g_data = load_giveaways()
+    gw = g_data.get("giveaways", {}).get(message_id)
+    if not gw:
+        await interaction.response.send_message("❌ Giveaway not found! Check the message ID.", ephemeral=True)
+        return
+    participants = gw.get("participants", [])
+    if not participants:
+        await interaction.response.send_message("❌ Cannot reroll: No participants joined this giveaway.", ephemeral=True)
+        return
+    new_winner_id = random.choice(participants)
+    prize = gw.get("prize", "Prize")
+    await interaction.response.send_message("🎲 Reroll processed!", ephemeral=True)
+    await interaction.channel.send(f"🎉 **Reroll Winner:** Congratulations <@{new_winner_id}>! You won the reroll for **{prize}**! 🥳")
+
+
+@bot.tree.command(name="glist", description="List all active giveaways in this server")
+async def glist_slash(interaction: discord.Interaction):
+    g_data = load_giveaways()
+    giveaways = g_data.get("giveaways", {})
+    active = [(mid, gw) for mid, gw in giveaways.items() if not gw.get("ended", False) and gw.get("guild_id") == interaction.guild_id]
+    if not active:
+        await interaction.response.send_message("ℹ️ No active giveaways running in this server.", ephemeral=True)
+        return
+    lines = []
+    for mid, gw in active:
+        end_ts = int(gw.get("end_time", 0))
+        prize = gw.get("prize", "Prize")
+        parts = len(gw.get("participants", []))
+        lines.append(f"• **{prize}** (ID: `{mid}`) — Ends <t:{end_ts}:R> | **{parts}** participants")
+    embed = discord.Embed(title="🎉 Active Giveaways", description="\n".join(lines), color=0x00D9FF, timestamp=discord.utils.utcnow())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="antinuke", description="Open Anti-Nuke Control Panel or manage security settings")
+@app_commands.describe(action="Choose security action (panel, enable, disable, status, edit)")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Open Security Setup Panel", value="panel"),
+    app_commands.Choice(name="Enable All 24 Protection Modules", value="enable"),
+    app_commands.Choice(name="Disable Anti-Nuke", value="disable"),
+    app_commands.Choice(name="View Live Status", value="status"),
+    app_commands.Choice(name="Open Interactive Editor", value="edit"),
+])
+async def antinuke_slash(interaction: discord.Interaction, action: str = "panel"):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not (await bot.is_owner(interaction.user)):
+        await interaction.response.send_message("❌ Access denied: Only Server Owner & Extra Owner can manage Anti-Nuke.", ephemeral=True)
+        return
+    cfg = load_antinuke_config()
+    if action == "enable":
+        cfg["enabled"] = True
+        save_antinuke_config(cfg)
+        embed = build_void_welcome_embed(interaction.guild, interaction.user, cfg)
+        await interaction.response.send_message(embed=embed)
+    elif action == "disable":
+        cfg["enabled"] = False
+        save_antinuke_config(cfg)
+        await interaction.response.send_message("🔴 **Anti-Nuke Protection DISABLED.**", ephemeral=True)
+    elif action == "status":
+        status_str = "🟢 ACTIVE" if cfg.get("enabled", True) else "🔴 DISABLED"
+        log_ch = f"<#{cfg.get('log_channel_id')}>" if cfg.get('log_channel_id') else "*(Not Set)*"
+        wl_count = len(cfg.get("whitelisted_users", {}))
+        embed = discord.Embed(
+            title="🛡️ VOID Security System — Live Status",
+            description=f"**State:** `{status_str}`\n**Security Log:** {log_ch}\n**Whitelisted Staff:** `{wl_count}`\n**Active Protections:** `24/24 Enabled`",
+            color=0x0055FF
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    elif action == "edit":
+        view = VoidSecurityEditorLauncher(interaction.user.id)
+        embed = discord.Embed(
+            title="🎨 VOID Security — Live Panel Customizer",
+            description="Click the button below to open the interactive form modal:",
+            color=0x0055FF
+        )
+        await interaction.response.send_message(embed=embed, view=view)
+    else:
+        embed = build_void_welcome_embed(interaction.guild, interaction.user, cfg)
+        view = VoidWelcomeActionView(interaction.guild)
+        await interaction.response.send_message(embed=embed, view=view)
+
+
+@bot.tree.command(name="wl", description="Manage Anti-Nuke whitelist (Server & Extra Owners only)")
+@app_commands.describe(subcmd="Choose whitelist action", target="Target user to whitelist or manage")
+@app_commands.choices(subcmd=[
+    app_commands.Choice(name="Open Whitelist Control Panel", value="add"),
+    app_commands.Choice(name="Remove User from Whitelist", value="remove"),
+    app_commands.Choice(name="List Whitelisted Members", value="list"),
+    app_commands.Choice(name="Reset All Whitelist Permissions", value="reset"),
+])
+async def wl_slash(interaction: discord.Interaction, subcmd: str = "list", target: discord.User = None):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not (await bot.is_owner(interaction.user)):
+        await interaction.response.send_message("❌ Access denied: Only Server Owner & Extra Owner can manage Whitelist.", ephemeral=True)
+        return
+    cfg = load_antinuke_config()
+    if subcmd == "add":
+        target = target or interaction.user
+        embed = build_antinuke_whitelist_embed(interaction.guild, target, cfg)
+        view = ByteWhitelistControlView(target, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view)
+    elif subcmd == "remove":
+        if not target:
+            await interaction.response.send_message("❌ Please specify a user to remove.", ephemeral=True)
+            return
+        whitelisted = cfg.get("whitelisted_users", {})
+        if str(target.id) in whitelisted:
+            del whitelisted[str(target.id)]
+            save_antinuke_config(cfg)
+            await interaction.response.send_message(f"🗑️ Removed {target.mention} from Whitelist.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"ℹ️ {target.mention} was not whitelisted.", ephemeral=True)
+    elif subcmd == "list":
+        whitelisted = cfg.get("whitelisted_users", {})
+        if not whitelisted:
+            await interaction.response.send_message("ℹ️ No members are currently whitelisted.", ephemeral=True)
+            return
+        lines = [f"• <@{uid}>" for uid in whitelisted.keys()]
+        embed = discord.Embed(title="👑 Whitelisted Members", description="\n".join(lines), color=0x0055FF)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    elif subcmd == "reset":
+        cfg["whitelisted_users"] = {}
+        save_antinuke_config(cfg)
+        await interaction.response.send_message("🗑️ All whitelist entries reset.", ephemeral=True)
+
+
+@bot.tree.command(name="extraowner", description="Promote or manage Extra Owners for unrestricted security control")
+@app_commands.describe(action="Action (add, remove, list)", target="Target user to promote or revoke")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Add Extra Owner", value="add"),
+    app_commands.Choice(name="Remove Extra Owner", value="remove"),
+    app_commands.Choice(name="List Extra Owners", value="list"),
+])
+async def extraowner_slash(interaction: discord.Interaction, action: str = "list", target: discord.User = None):
+    if interaction.user.id != interaction.guild.owner_id and not (await bot.is_owner(interaction.user)):
+        await interaction.response.send_message("❌ Access denied: Only the Server Owner can manage Extra Owners.", ephemeral=True)
+        return
+    cfg = load_antinuke_config()
+    if "extra_owners" not in cfg:
+        cfg["extra_owners"] = []
+    if action == "add":
+        if not target:
+            await interaction.response.send_message("❌ Please select a user to add as Extra Owner.", ephemeral=True)
+            return
+        if str(target.id) not in [str(x) for x in cfg["extra_owners"]]:
+            cfg["extra_owners"].append(target.id)
+            save_antinuke_config(cfg)
+            await interaction.response.send_message(f"👑 **{target.mention} has been promoted to EXTRA OWNER!**\nFull security & whitelist permissions granted.")
+        else:
+            await interaction.response.send_message(f"ℹ️ {target.mention} is already an Extra Owner.", ephemeral=True)
+    elif action == "remove":
+        if not target:
+            await interaction.response.send_message("❌ Please select a user to remove.", ephemeral=True)
+            return
+        cfg["extra_owners"] = [x for x in cfg["extra_owners"] if str(x) != str(target.id)]
+        save_antinuke_config(cfg)
+        await interaction.response.send_message(f"🗑️ **{target.mention} removed from Extra Owners.**")
+    else:
+        extra_list = [f"• <@{x}>" for x in cfg.get("extra_owners", [])]
+        owner_mention = interaction.guild.owner.mention if interaction.guild.owner else f"<@{interaction.guild.owner_id}>"
+        embed = discord.Embed(
+            title="👑 Server Owner & Extra Owners",
+            description=f"**Server Owner:** {owner_mention}\n\n**Extra Owners:**\n" + ("\n".join(extra_list) if extra_list else "*None added yet*"),
+            color=0x0055FF
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="lock", description="Lockdown current channel or entire server during active raids")
+@app_commands.describe(target="Optional: 'all' to lock entire server")
+async def lock_slash(interaction: discord.Interaction, target: str = None):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Access denied.", ephemeral=True)
+        return
+    everyone_role = interaction.guild.default_role
+    if target and target.lower() in ("all", "server"):
+        count = 0
+        for ch in interaction.guild.text_channels:
+            try:
+                overwrite = ch.overwrites_for(everyone_role)
+                if overwrite.send_messages is not False:
+                    overwrite.send_messages = False
+                    await ch.set_permissions(everyone_role, overwrite=overwrite, reason=f"Lockdown by {interaction.user.name}")
+                    count += 1
+            except Exception:
+                pass
+        await interaction.response.send_message(f"🔒 **Server-wide lockdown activated:** Locked `{count}` text channels.")
+    else:
+        ch = interaction.channel
+        overwrite = ch.overwrites_for(everyone_role)
+        overwrite.send_messages = False
+        await ch.set_permissions(everyone_role, overwrite=overwrite, reason=f"Locked by {interaction.user.name}")
+        await interaction.response.send_message(f"🔒 {ch.mention} has been **LOCKED**.")
+
+
+@bot.tree.command(name="unlock", description="Unlock current channel or entire server after raids are cleared")
+@app_commands.describe(target="Optional: 'all' to unlock entire server")
+async def unlock_slash(interaction: discord.Interaction, target: str = None):
+    if not is_server_or_extra_owner(interaction.guild, interaction.user.id) and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Access denied.", ephemeral=True)
+        return
+    everyone_role = interaction.guild.default_role
+    if target and target.lower() in ("all", "server"):
+        count = 0
+        for ch in interaction.guild.text_channels:
+            try:
+                overwrite = ch.overwrites_for(everyone_role)
+                if overwrite.send_messages is False:
+                    overwrite.send_messages = None
+                    await ch.set_permissions(everyone_role, overwrite=overwrite, reason=f"Unlocked by {interaction.user.name}")
+                    count += 1
+            except Exception:
+                pass
+        await interaction.response.send_message(f"🔓 **Server unlocked:** Restored permissions in `{count}` text channels.")
+    else:
+        ch = interaction.channel
+        overwrite = ch.overwrites_for(everyone_role)
+        overwrite.send_messages = None
+        await ch.set_permissions(everyone_role, overwrite=overwrite, reason=f"Unlocked by {interaction.user.name}")
+        await interaction.response.send_message(f"🔓 {ch.mention} has been **UNLOCKED**.")
+
 
 if __name__ == '__main__':
     run_bot()
