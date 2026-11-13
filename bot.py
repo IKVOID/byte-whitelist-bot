@@ -11731,7 +11731,12 @@ ZYNRAX_PAGES = [
             "*announce (or /announce) \u00BB Open interactive announcement builder\n"
             "*ping \u00BB Real-time Discord WebSocket latency & API heartbeat\n"
             "*setstatus / *setpresence \u00BB Configure bot status & activity\n"
-            "*lock / *unlock \u00BB Lock or unlock current text channel"
+            "*lock / *unlock \u00BB Lock or unlock current text channel\n\n"
+            "__Emoji & Sticker Stealer (Any Server)__\n"
+            "*steal <emoji(s)/url> [name] \u00BB Steal/clone emoji(s) or reply with *steal\n"
+            "*stealsticker [name] \u00BB Reply to a sticker to clone into server\n"
+            "/steal & /stealsticker \u00BB Slash commands to steal emojis & stickers\n"
+            "Right-Click / Long-Press \u00BB Apps \u00BB Steal Emoji / Sticker (1-Click)"
         )
     },
     {
@@ -15587,18 +15592,22 @@ def build_giveaway_embed(gw: dict, is_ended: bool = False) -> discord.Embed:
     winners_count = int(gw.get("winners", 1))
     participants = gw.get("participants", [])
     bullet = gw.get("bullet_emoji", "•")
+    if not bullet or "â" in str(bullet) or bullet == "▪":
+        bullet = "•"
     color_code = get_giveaway_color(gw.get("color", "#00D9FF"))
 
     if not is_ended:
+        desc_lines = [
+            f"{bullet} `Hosted by` {host_mention}",
+            f"{bullet} `Ends:` <t:{end_ts}:f> (<t:{end_ts}:R>)",
+            f"{bullet} `Winners:` **{winners_count}**",
+            "",
+            f"{bullet} `Participants:` **{len(participants)}**"
+        ]
         embed = discord.Embed(
             title=prize,
             color=color_code,
-            description=(
-                f"{bullet} **Hosted by** {host_mention}\n"
-                f"{bullet} **Ends:** <t:{end_ts}:f> (<t:{end_ts}:R>)\n"
-                f"{bullet} **Winners:** {winners_count}\n\n"
-                f"{bullet} **Participants:** {len(participants)}"
-            )
+            description="\n".join(desc_lines)
         )
     else:
         winner_ids = gw.get("winner_ids", [])
@@ -15607,15 +15616,17 @@ def build_giveaway_embed(gw: dict, is_ended: bool = False) -> discord.Embed:
         else:
             winners_str = "None (No valid entries)"
 
+        desc_lines = [
+            f"{bullet} `Hosted by` {host_mention}",
+            f"{bullet} `Ended:` <t:{end_ts}:R>",
+            f"{bullet} `Winners:` {winners_str}",
+            "",
+            f"{bullet} `Total Participants:` **{len(participants)}**"
+        ]
         embed = discord.Embed(
             title=f"🎉 Giveaway Ended: {prize}",
             color=0x2B2D31,
-            description=(
-                f"{bullet} **Hosted by** {host_mention}\n"
-                f"{bullet} **Ended:** <t:{end_ts}:R>\n"
-                f"{bullet} **Winners:** {winners_str}\n\n"
-                f"{bullet} **Total Participants:** {len(participants)}"
-            )
+            description="\n".join(desc_lines)
         )
 
     return embed
@@ -16322,6 +16333,641 @@ async def unlock_slash(interaction: discord.Interaction, target: str = None):
         overwrite.send_messages = None
         await ch.set_permissions(everyone_role, overwrite=overwrite, reason=f"Unlocked by {interaction.user.name}")
         await interaction.response.send_message(f"🔓 {ch.mention} has been **UNLOCKED**.")
+
+
+
+
+# ==============================================================================
+#                 EMOJI & STICKER STEALER / CLONER SYSTEM
+# ==============================================================================
+
+CUSTOM_EMOJI_REGEX = re.compile(r'<(a?):([a-zA-Z0-9_]{2,32}):(\d{17,21})>')
+HTTP_IMAGE_URL_REGEX = re.compile(r'^https?://\S+\.(?:png|jpe?g|gif|webp)(?:\?\S*)?$', re.IGNORECASE)
+
+def user_can_manage_emojis(member: discord.Member) -> bool:
+    """Checks if the user has permission to add emojis/stickers."""
+    if not isinstance(member, discord.Member):
+        return False
+    if is_server_or_extra_owner(member.guild, member.id):
+        return True
+    perms = member.guild_permissions
+    if perms.administrator:
+        return True
+    if getattr(perms, "manage_guild_expressions", False) or getattr(perms, "manage_emojis_and_stickers", False) or getattr(perms, "manage_emojis", False):
+        return True
+    return False
+
+def bot_can_manage_emojis(guild: discord.Guild) -> bool:
+    """Checks if the bot has permission to create emojis/stickers."""
+    me = guild.me
+    if not me:
+        return True
+    perms = me.guild_permissions
+    if perms.administrator:
+        return True
+    if getattr(perms, "manage_guild_expressions", False) or getattr(perms, "manage_emojis_and_stickers", False) or getattr(perms, "manage_emojis", False):
+        return True
+    return False
+
+def sanitize_emoji_name(name: str, fallback: str = "emoji") -> str:
+    cleaned = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+    cleaned = cleaned.strip('_')
+    if len(cleaned) < 2:
+        cleaned = f"{fallback}_{cleaned}".strip('_')[:32]
+    if len(cleaned) < 2:
+        cleaned = f"emoji_{int(time.time()) % 10000}"
+    return cleaned[:32]
+
+def sanitize_sticker_name(name: str, fallback: str = "custom_sticker") -> str:
+    cleaned = re.sub(r'[^a-zA-Z0-9_\- ]', '', name).strip()
+    if len(cleaned) < 2:
+        cleaned = f"{fallback}_{cleaned}".strip()[:30]
+    if len(cleaned) < 2:
+        cleaned = f"sticker_{int(time.time()) % 10000}"
+    return cleaned[:30]
+
+async def download_image_bytes(url: str, max_size: int = 10 * 1024 * 1024) -> tuple[bytes | None, str | None]:
+    """Downloads image bytes safely with User-Agent and timeout."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DiscordBot"}
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    return None, f"HTTP {resp.status}"
+                content = await resp.read()
+                if len(content) > max_size:
+                    return None, f"File too large ({len(content)/(1024*1024):.2f}MB, limit 10MB)"
+                return content, None
+    except Exception as e:
+        return None, str(e)
+
+def process_emoji_image(raw_bytes: bytes, is_animated: bool = False) -> bytes:
+    """Ensures emoji bytes are under 256KB and properly formatted."""
+    if len(raw_bytes) <= 256 * 1024:
+        return raw_bytes
+    try:
+        from PIL import Image, ImageSequence
+        img = Image.open(io.BytesIO(raw_bytes))
+        out_buf = io.BytesIO()
+        if is_animated or getattr(img, "is_animated", False):
+            frames = []
+            durations = []
+            for frame in ImageSequence.Iterator(img):
+                f = frame.copy().convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS)
+                frames.append(f)
+                durations.append(frame.info.get("duration", 100))
+            if frames:
+                frames[0].save(out_buf, format="GIF", save_all=True, append_images=frames[1:], duration=durations, loop=0, optimize=True)
+                val = out_buf.getvalue()
+                if len(val) <= 256 * 1024:
+                    return val
+        else:
+            img = img.convert("RGBA").resize((128, 128), Image.Resampling.LANCZOS)
+            img.save(out_buf, format="PNG", optimize=True)
+            val = out_buf.getvalue()
+            if len(val) <= 256 * 1024:
+                return val
+    except Exception as e:
+        logger.debug(f"Pillow emoji resize note: {e}")
+    return raw_bytes
+
+async def clone_single_emoji(guild: discord.Guild, name: str, is_animated: bool, emoji_id: str, author_name: str) -> tuple[discord.Emoji | None, str | None]:
+    ext = "gif" if is_animated else "png"
+    cdn_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.{ext}?quality=lossless"
+    raw_bytes, err = await download_image_bytes(cdn_url)
+    if not raw_bytes:
+        return None, f"Failed to download emoji {name} ({err})"
+    
+    clean_name = sanitize_emoji_name(name)
+    processed = process_emoji_image(raw_bytes, is_animated)
+    
+    try:
+        new_emoji = await guild.create_custom_emoji(
+            name=clean_name,
+            image=processed,
+            reason=f"Stolen by {author_name}"
+        )
+        return new_emoji, None
+    except discord.errors.Forbidden:
+        return None, "Bot is missing 'Manage Emojis and Stickers' permission."
+    except discord.errors.HTTPException as e:
+        if e.code == 30008:
+            return None, "Maximum number of emojis reached for this server!"
+        return None, f"Discord error: {e.text}"
+    except Exception as e:
+        return None, str(e)
+
+async def clone_single_sticker(guild: discord.Guild, sticker_item: discord.StickerItem, custom_name: str | None, author_name: str) -> tuple[discord.GuildSticker | None, str | None]:
+    if sticker_item.format == discord.StickerFormatType.lottie:
+        return None, "Default Discord Lottie stickers cannot be uploaded as custom stickers. Please use a PNG/APNG/GIF sticker!"
+    
+    raw_bytes, err = await download_image_bytes(sticker_item.url)
+    if not raw_bytes:
+        try:
+            raw_bytes = await sticker_item.read()
+        except Exception as e:
+            return None, f"Failed to download sticker: {err or e}"
+    
+    name = custom_name if custom_name else sticker_item.name
+    clean_name = sanitize_sticker_name(name)
+    
+    ext = "gif" if sticker_item.format == discord.StickerFormatType.gif else "png"
+    file = discord.File(io.BytesIO(raw_bytes), filename=f"{clean_name}.{ext}")
+    
+    try:
+        new_sticker = await guild.create_sticker(
+            name=clean_name,
+            description=f"Cloned sticker by {author_name}",
+            emoji="🎉",
+            file=file,
+            reason=f"Sticker cloned by {author_name}"
+        )
+        return new_sticker, None
+    except discord.errors.Forbidden:
+        return None, "Bot is missing 'Manage Emojis and Stickers' permission."
+    except discord.errors.HTTPException as e:
+        if e.code == 30039:
+            return None, "Maximum number of stickers reached for this server!"
+        return None, f"Discord error: {e.text}"
+    except Exception as e:
+        return None, str(e)
+
+def build_emoji_success_embed(guild: discord.Guild, emoji: discord.Emoji, user: discord.User | discord.Member) -> discord.Embed:
+    anim_count = len([e for e in guild.emojis if e.animated])
+    static_count = len([e for e in guild.emojis if not e.animated])
+    limit = guild.emoji_limit
+    desc_lines = [
+        f"**Emoji:** {emoji} (`{emoji}`)",
+        f"**Name:** `{emoji.name}`",
+        f"**Type:** `{'Animated (GIF)' if emoji.animated else 'Static (PNG)'}`",
+        f"**Added By:** {user.mention}",
+        "",
+        f"**Server Slots:** `Animated: {anim_count}/{limit}` | `Static: {static_count}/{limit}`"
+    ]
+    embed = discord.Embed(
+        title="<a:emoji_31:1523222455823499344> Emoji Stolen Successfully!",
+        description="\n".join(desc_lines),
+        color=0x00D9FF
+    )
+    embed.set_thumbnail(url=emoji.url)
+    embed.set_footer(text=f"ID: {emoji.id} • Steal System | Designed By diewithvoid")
+    return embed
+
+def build_sticker_success_embed(guild: discord.Guild, sticker: discord.GuildSticker, user: discord.User | discord.Member) -> discord.Embed:
+    limit = guild.sticker_limit
+    desc_lines = [
+        f"**Name:** `{sticker.name}`",
+        f"**Added By:** {user.mention}",
+        "",
+        f"**Server Slots:** `Stickers: {len(guild.stickers)}/{limit}`"
+    ]
+    embed = discord.Embed(
+        title="<a:emoji_31:1523222455823499344> Sticker Cloned Successfully!",
+        description="\n".join(desc_lines),
+        color=0x00D9FF
+    )
+    embed.set_thumbnail(url=sticker.url)
+    embed.set_footer(text=f"ID: {sticker.id} • Steal System | Designed By diewithvoid")
+    return embed
+
+
+@bot.command(name="steal", aliases=["addemoji", "stealemoji", "cloneemoji", "emojisteal"])
+async def steal_cmd(ctx, *, args: str = None):
+    """Steal any custom emoji (static or animated) or sticker from any server into this server."""
+    if not user_can_manage_emojis(ctx.author):
+        await ctx.reply("❌ **Access Denied:** You need **Manage Emojis & Stickers** or Admin permissions to steal emojis/stickers.")
+        return
+    if not bot_can_manage_emojis(ctx.guild):
+        await ctx.reply("❌ **Bot Missing Permissions:** I need the **Manage Emojis and Stickers** permission in this server to upload emojis!")
+        return
+
+    # Check 1: Reply Mode
+    if ctx.message.reference and ctx.message.reference.message_id:
+        try:
+            ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        except Exception as e:
+            await ctx.reply(f"❌ Failed to fetch referenced message: `{e}`")
+            return
+        
+        # Check replied message stickers first
+        if ref_msg.stickers:
+            sticker_item = ref_msg.stickers[0]
+            custom_name = args.strip() if args else None
+            msg_status = await ctx.reply(f"⏳ **Cloning sticker `{sticker_item.name}`...**")
+            new_stk, err = await clone_single_sticker(ctx.guild, sticker_item, custom_name, ctx.author.name)
+            if new_stk:
+                embed = build_sticker_success_embed(ctx.guild, new_stk, ctx.author)
+                await msg_status.edit(content=None, embed=embed)
+            else:
+                await msg_status.edit(content=f"❌ **Failed to clone sticker:** {err}")
+            return
+        
+        # Check replied message emojis
+        emojis_found = CUSTOM_EMOJI_REGEX.findall(ref_msg.content)
+        if emojis_found:
+            if len(emojis_found) == 1:
+                is_anim, orig_name, em_id = emojis_found[0]
+                target_name = args.strip() if args else orig_name
+                msg_status = await ctx.reply(f"⏳ **Stealing emoji `{target_name}`...**")
+                new_em, err = await clone_single_emoji(ctx.guild, target_name, bool(is_anim), em_id, ctx.author.name)
+                if new_em:
+                    embed = build_emoji_success_embed(ctx.guild, new_em, ctx.author)
+                    await msg_status.edit(content=None, embed=embed)
+                else:
+                    await msg_status.edit(content=f"❌ **Failed to steal emoji:** {err}")
+                return
+            else:
+                # Mass steal from replied message
+                msg_status = await ctx.reply(f"⏳ **Mass stealing {len(emojis_found)} emojis from replied message...**")
+                successes = []
+                failures = []
+                for is_anim, orig_name, em_id in emojis_found[:20]:
+                    new_em, err = await clone_single_emoji(ctx.guild, orig_name, bool(is_anim), em_id, ctx.author.name)
+                    if new_em:
+                        successes.append(new_em)
+                    else:
+                        failures.append(f"`{orig_name}`: {err}")
+                
+                embed = discord.Embed(
+                    title=f"<a:emoji_31:1523222455823499344> Mass Steal Finished ({len(successes)}/{len(emojis_found[:20])})",
+                    description=(
+                        f"Successfully added **{len(successes)}** emojis to **{ctx.guild.name}**!\n\n"
+                        + " ".join([str(e) for e in successes])
+                    ) if successes else "❌ Could not add any emojis.",
+                    color=0x00D9FF
+                )
+                if failures:
+                    embed.add_field(name="Failed Emojis", value="\n".join(failures[:10]), inline=False)
+                embed.set_footer(text=f"Added by {ctx.author.name} • Steal System")
+                await msg_status.edit(content=None, embed=embed)
+                return
+
+        # Check replied message image attachments
+        if ref_msg.attachments:
+            att = ref_msg.attachments[0]
+            if any(att.filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+                custom_name = args.strip() if args else os.path.splitext(att.filename)[0]
+                msg_status = await ctx.reply(f"⏳ **Creating emoji `{custom_name}` from attachment...**")
+                raw_bytes, err = await download_image_bytes(att.url)
+                if not raw_bytes:
+                    await msg_status.edit(content=f"❌ Failed to download attachment: `{err}`")
+                    return
+                is_anim = att.filename.lower().endswith(".gif")
+                processed = process_emoji_image(raw_bytes, is_anim)
+                clean_name = sanitize_emoji_name(custom_name)
+                try:
+                    new_em = await ctx.guild.create_custom_emoji(name=clean_name, image=processed, reason=f"Stolen by {ctx.author.name}")
+                    embed = build_emoji_success_embed(ctx.guild, new_em, ctx.author)
+                    await msg_status.edit(content=None, embed=embed)
+                except Exception as e:
+                    await msg_status.edit(content=f"❌ Failed to create emoji: `{e}`")
+                return
+
+    # Check 2: Direct Attachment Mode
+    if ctx.message.attachments:
+        att = ctx.message.attachments[0]
+        if any(att.filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+            custom_name = args.strip() if args else os.path.splitext(att.filename)[0]
+            msg_status = await ctx.reply(f"⏳ **Creating emoji `{custom_name}` from your attachment...**")
+            raw_bytes, err = await download_image_bytes(att.url)
+            if not raw_bytes:
+                await msg_status.edit(content=f"❌ Failed to download attachment: `{err}`")
+                return
+            is_anim = att.filename.lower().endswith(".gif")
+            processed = process_emoji_image(raw_bytes, is_anim)
+            clean_name = sanitize_emoji_name(custom_name)
+            try:
+                new_em = await ctx.guild.create_custom_emoji(name=clean_name, image=processed, reason=f"Created by {ctx.author.name}")
+                embed = build_emoji_success_embed(ctx.guild, new_em, ctx.author)
+                await msg_status.edit(content=None, embed=embed)
+            except Exception as e:
+                await msg_status.edit(content=f"❌ Failed to create emoji: `{e}`")
+            return
+
+    # Check 3: Arguments Mode (Emoji tags or URLs)
+    if not args:
+        guide_lines = [
+            "Easily copy ANY emoji (static or animated) or sticker from ANY server into this server!\n",
+            "**1. Single Emoji Steal / Rename:**",
+            "• `*steal <emoji>` — Copies emoji with its original name",
+            "• `*steal <emoji> <custom_name>` — Copies emoji with a custom name",
+            "*Example:* `*steal <a:blob_dance:1523222455823499344> my_dance`\n",
+            "**2. Mass Emoji Stealing:**",
+            "• `*steal <emoji1> <emoji2> <emoji3> ...` — Clones up to 20 emojis in one command!\n",
+            "**3. Reply Mode (Super Fast!):**",
+            "• Reply to any message containing emojis or stickers with `*steal`",
+            "• Reply to any message with a sticker with `*stealsticker [name]`\n",
+            "**4. From Image / GIF URL or File:**",
+            "• `*steal <image_url> <name>` — Converts direct image or GIF URL into an emoji",
+            "• Attach an image or GIF and type `*steal <name>`\n",
+            "**5. Slash Commands & 1-Click Apps Menu:**",
+            "• `/steal <emoji> [name]` — Slash command for quick stealing",
+            "• Right-Click (PC) or Long-Press (Mobile) any message » **Apps** » **Steal Emoji / Sticker**"
+        ]
+        embed_help = discord.Embed(
+            title="<a:emoji_31:1523222455823499344> Emoji & Sticker Stealer Guide",
+            description="\n".join(guide_lines),
+            color=0x00D9FF
+        )
+        embed_help.set_footer(text="Steal System | Designed By diewithvoid")
+        await ctx.reply(embed=embed_help)
+        return
+
+    # Check for custom emojis in args
+    emojis_found = CUSTOM_EMOJI_REGEX.findall(args)
+    if emojis_found:
+        if len(emojis_found) == 1:
+            is_anim, orig_name, em_id = emojis_found[0]
+            rem_text = CUSTOM_EMOJI_REGEX.sub('', args).strip()
+            target_name = rem_text if rem_text else orig_name
+            msg_status = await ctx.reply(f"⏳ **Stealing emoji `{target_name}`...**")
+            new_em, err = await clone_single_emoji(ctx.guild, target_name, bool(is_anim), em_id, ctx.author.name)
+            if new_em:
+                embed = build_emoji_success_embed(ctx.guild, new_em, ctx.author)
+                await msg_status.edit(content=None, embed=embed)
+            else:
+                await msg_status.edit(content=f"❌ **Failed to steal emoji:** {err}")
+            return
+        else:
+            # Mass Steal
+            msg_status = await ctx.reply(f"⏳ **Mass stealing {len(emojis_found)} emojis...**")
+            successes = []
+            failures = []
+            for is_anim, orig_name, em_id in emojis_found[:20]:
+                new_em, err = await clone_single_emoji(ctx.guild, orig_name, bool(is_anim), em_id, ctx.author.name)
+                if new_em:
+                    successes.append(new_em)
+                else:
+                    failures.append(f"`{orig_name}`: {err}")
+            
+            embed = discord.Embed(
+                title=f"<a:emoji_31:1523222455823499344> Mass Steal Finished ({len(successes)}/{len(emojis_found[:20])})",
+                description=(
+                    f"Successfully added **{len(successes)}** emojis to **{ctx.guild.name}**!\n\n"
+                    + " ".join([str(e) for e in successes])
+                ) if successes else "❌ Could not add any emojis.",
+                color=0x00D9FF
+            )
+            if failures:
+                embed.add_field(name="Failed Emojis", value="\n".join(failures[:10]), inline=False)
+            embed.set_footer(text=f"Added by {ctx.author.name} • Steal System")
+            await msg_status.edit(content=None, embed=embed)
+            return
+
+    # Check for direct image URL in args
+    parts = args.split()
+    first_part = parts[0]
+    if first_part.startswith("http://") or first_part.startswith("https://"):
+        target_name = parts[1] if len(parts) > 1 else f"emoji_{int(time.time()) % 10000}"
+        msg_status = await ctx.reply(f"⏳ **Downloading & creating emoji `{target_name}` from URL...**")
+        raw_bytes, err = await download_image_bytes(first_part)
+        if not raw_bytes:
+            await msg_status.edit(content=f"❌ Failed to download image from URL: `{err}`")
+            return
+        is_anim = ".gif" in first_part.lower()
+        processed = process_emoji_image(raw_bytes, is_anim)
+        clean_name = sanitize_emoji_name(target_name)
+        try:
+            new_em = await ctx.guild.create_custom_emoji(name=clean_name, image=processed, reason=f"Created by {ctx.author.name}")
+            embed = build_emoji_success_embed(ctx.guild, new_em, ctx.author)
+            await msg_status.edit(content=None, embed=embed)
+        except Exception as e:
+            await msg_status.edit(content=f"❌ Failed to create emoji: `{e}`")
+        return
+
+    await ctx.reply("❌ **Invalid format!** Please provide an emoji `<:name:id>`, image URL, or reply to a message containing emojis/stickers. Type `*steal` for full guide.")
+
+
+@bot.command(name="stealsticker", aliases=["addsticker", "clonesticker"])
+async def stealsticker_cmd(ctx, *, args: str = None):
+    """Clone a sticker from a replied message or image URL into this server."""
+    if not user_can_manage_emojis(ctx.author):
+        await ctx.reply("❌ **Access Denied:** You need **Manage Emojis & Stickers** or Admin permissions to steal stickers.")
+        return
+    if not bot_can_manage_emojis(ctx.guild):
+        await ctx.reply("❌ **Bot Missing Permissions:** I need the **Manage Emojis and Stickers** permission in this server to upload stickers!")
+        return
+
+    # Mode 1: Reply to a message with a sticker
+    if ctx.message.reference and ctx.message.reference.message_id:
+        try:
+            ref_msg = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+        except Exception as e:
+            await ctx.reply(f"❌ Failed to fetch referenced message: `{e}`")
+            return
+        
+        if not ref_msg.stickers:
+            await ctx.reply("❌ The replied message does not contain any stickers!")
+            return
+        
+        sticker_item = ref_msg.stickers[0]
+        custom_name = args.strip() if args else None
+        msg_status = await ctx.reply(f"⏳ **Cloning sticker `{sticker_item.name}` into server...**")
+        new_stk, err = await clone_single_sticker(ctx.guild, sticker_item, custom_name, ctx.author.name)
+        if new_stk:
+            embed = build_sticker_success_embed(ctx.guild, new_stk, ctx.author)
+            await msg_status.edit(content=None, embed=embed)
+        else:
+            await msg_status.edit(content=f"❌ **Failed to clone sticker:** {err}")
+        return
+
+    # Mode 2: Direct URL
+    if args and (args.startswith("http://") or args.startswith("https://")):
+        parts = args.split()
+        url = parts[0]
+        custom_name = parts[1] if len(parts) > 1 else f"sticker_{int(time.time()) % 10000}"
+        msg_status = await ctx.reply(f"⏳ **Downloading & creating sticker `{custom_name}`...**")
+        raw_bytes, err = await download_image_bytes(url)
+        if not raw_bytes:
+            await msg_status.edit(content=f"❌ Failed to download sticker image: `{err}`")
+            return
+        clean_name = sanitize_sticker_name(custom_name)
+        ext = "gif" if ".gif" in url.lower() else "png"
+        file = discord.File(io.BytesIO(raw_bytes), filename=f"{clean_name}.{ext}")
+        try:
+            new_stk = await ctx.guild.create_sticker(
+                name=clean_name,
+                description=f"Cloned sticker by {ctx.author.name}",
+                emoji="🎉",
+                file=file,
+                reason=f"Sticker cloned by {ctx.author.name}"
+            )
+            embed = build_sticker_success_embed(ctx.guild, new_stk, ctx.author)
+            await msg_status.edit(content=None, embed=embed)
+        except Exception as e:
+            await msg_status.edit(content=f"❌ Failed to create sticker: `{e}`")
+        return
+
+    # Help
+    await ctx.reply(
+        "ℹ️ **How to steal stickers:**\n"
+        "1. **Reply Mode:** Reply to any message that has a sticker and type `*stealsticker [optional_name]`\n"
+        "2. **URL Mode:** Type `*stealsticker <image_url> <sticker_name>`\n"
+        "3. **Context Menu:** Right-Click or Long-Press any sticker message » **Apps** » **Steal Emoji / Sticker**"
+    )
+
+
+@bot.tree.command(name="steal", description="Steal / copy any emoji from any server into this server")
+@app_commands.describe(
+    emoji="Paste custom emoji (<:name:id> or <a:name:id>) or image/GIF URL",
+    name="Optional: Custom name for the emoji"
+)
+async def steal_slash(interaction: discord.Interaction, emoji: str, name: str = None):
+    if not user_can_manage_emojis(interaction.user):
+        await interaction.response.send_message("❌ **Access Denied:** You need **Manage Emojis & Stickers** or Admin permissions to steal emojis.", ephemeral=True)
+        return
+    if not bot_can_manage_emojis(interaction.guild):
+        await interaction.response.send_message("❌ **Bot Missing Permissions:** I need the **Manage Emojis and Stickers** permission in this server!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    
+    matches = CUSTOM_EMOJI_REGEX.findall(emoji)
+    if matches:
+        is_anim, orig_name, em_id = matches[0]
+        target_name = name.strip() if name else orig_name
+        new_em, err = await clone_single_emoji(interaction.guild, target_name, bool(is_anim), em_id, interaction.user.name)
+        if new_em:
+            embed = build_emoji_success_embed(interaction.guild, new_em, interaction.user)
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.followup.send(f"❌ **Failed to steal emoji:** {err}")
+        return
+
+    if emoji.startswith("http://") or emoji.startswith("https://"):
+        target_name = name.strip() if name else f"emoji_{int(time.time()) % 10000}"
+        raw_bytes, err = await download_image_bytes(emoji)
+        if not raw_bytes:
+            await interaction.followup.send(f"❌ Failed to download image from URL: `{err}`")
+            return
+        is_anim = ".gif" in emoji.lower()
+        processed = process_emoji_image(raw_bytes, is_anim)
+        clean_name = sanitize_emoji_name(target_name)
+        try:
+            new_em = await interaction.guild.create_custom_emoji(name=clean_name, image=processed, reason=f"Created by {interaction.user.name}")
+            embed = build_emoji_success_embed(interaction.guild, new_em, interaction.user)
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to create emoji: `{e}`")
+        return
+
+    await interaction.followup.send("❌ **Invalid format!** Please provide a custom emoji `<:name:id>` or a valid image/GIF URL.")
+
+
+@bot.tree.command(name="stealsticker", description="Clone a custom sticker into this server from a direct image URL")
+@app_commands.describe(
+    url="Direct image or sticker URL (PNG, APNG, GIF)",
+    name="Name for the sticker (2-30 characters)"
+)
+async def stealsticker_slash(interaction: discord.Interaction, url: str, name: str):
+    if not user_can_manage_emojis(interaction.user):
+        await interaction.response.send_message("❌ **Access Denied:** You need **Manage Emojis & Stickers** or Admin permissions to steal stickers.", ephemeral=True)
+        return
+    if not bot_can_manage_emojis(interaction.guild):
+        await interaction.response.send_message("❌ **Bot Missing Permissions:** I need the **Manage Emojis and Stickers** permission in this server!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    raw_bytes, err = await download_image_bytes(url)
+    if not raw_bytes:
+        await interaction.followup.send(f"❌ Failed to download sticker image: `{err}`")
+        return
+    clean_name = sanitize_sticker_name(name)
+    ext = "gif" if ".gif" in url.lower() else "png"
+    file = discord.File(io.BytesIO(raw_bytes), filename=f"{clean_name}.{ext}")
+    try:
+        new_stk = await interaction.guild.create_sticker(
+            name=clean_name,
+            description=f"Cloned sticker by {interaction.user.name}",
+            emoji="🎉",
+            file=file,
+            reason=f"Sticker cloned by {interaction.user.name}"
+        )
+        embed = build_sticker_success_embed(interaction.guild, new_stk, interaction.user)
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to create sticker: `{e}`")
+
+
+@bot.tree.context_menu(name="Steal Emoji / Sticker")
+async def steal_context_menu(interaction: discord.Interaction, message: discord.Message):
+    """1-Click context menu on desktop (Right Click -> Apps) or mobile (Long Press -> Apps)."""
+    if not user_can_manage_emojis(interaction.user):
+        await interaction.response.send_message("❌ **Access Denied:** You need **Manage Emojis & Stickers** or Admin permissions to steal emojis/stickers.", ephemeral=True)
+        return
+    if not bot_can_manage_emojis(interaction.guild):
+        await interaction.response.send_message("❌ **Bot Missing Permissions:** I need the **Manage Emojis and Stickers** permission in this server!", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    # 1. Check for stickers
+    if message.stickers:
+        sticker_item = message.stickers[0]
+        new_stk, err = await clone_single_sticker(interaction.guild, sticker_item, None, interaction.user.name)
+        if new_stk:
+            embed = build_sticker_success_embed(interaction.guild, new_stk, interaction.user)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ **Failed to clone sticker:** {err}", ephemeral=True)
+        return
+
+    # 2. Check for emojis
+    emojis_found = CUSTOM_EMOJI_REGEX.findall(message.content)
+    if emojis_found:
+        if len(emojis_found) == 1:
+            is_anim, orig_name, em_id = emojis_found[0]
+            new_em, err = await clone_single_emoji(interaction.guild, orig_name, bool(is_anim), em_id, interaction.user.name)
+            if new_em:
+                embed = build_emoji_success_embed(interaction.guild, new_em, interaction.user)
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ **Failed to steal emoji:** {err}", ephemeral=True)
+        else:
+            successes = []
+            failures = []
+            for is_anim, orig_name, em_id in emojis_found[:20]:
+                new_em, err = await clone_single_emoji(interaction.guild, orig_name, bool(is_anim), em_id, interaction.user.name)
+                if new_em:
+                    successes.append(new_em)
+                else:
+                    failures.append(f"`{orig_name}`: {err}")
+            
+            embed = discord.Embed(
+                title=f"<a:emoji_31:1523222455823499344> Context Steal Finished ({len(successes)}/{len(emojis_found[:20])})",
+                description=(
+                    f"Successfully added **{len(successes)}** emojis to **{interaction.guild.name}**!\n\n"
+                    + " ".join([str(e) for e in successes])
+                ) if successes else "❌ Could not add any emojis.",
+                color=0x00D9FF
+            )
+            if failures:
+                embed.add_field(name="Failed Emojis", value="\n".join(failures[:10]), inline=False)
+            embed.set_footer(text=f"Added by {interaction.user.name} • Steal System")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    # 3. Check for attachments
+    if message.attachments:
+        att = message.attachments[0]
+        if any(att.filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+            raw_bytes, err = await download_image_bytes(att.url)
+            if not raw_bytes:
+                await interaction.followup.send(f"❌ Failed to download attachment: `{err}`", ephemeral=True)
+                return
+            is_anim = att.filename.lower().endswith(".gif")
+            processed = process_emoji_image(raw_bytes, is_anim)
+            clean_name = sanitize_emoji_name(os.path.splitext(att.filename)[0])
+            try:
+                new_em = await interaction.guild.create_custom_emoji(name=clean_name, image=processed, reason=f"Created by {interaction.user.name}")
+                embed = build_emoji_success_embed(interaction.guild, new_em, interaction.user)
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            except Exception as e:
+                await interaction.followup.send(f"❌ Failed to create emoji: `{e}`", ephemeral=True)
+            return
+
+    await interaction.followup.send("❌ No custom emojis, stickers, or image attachments found in that message to steal!", ephemeral=True)
+
 
 
 if __name__ == '__main__':
